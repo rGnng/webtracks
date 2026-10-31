@@ -11,6 +11,8 @@ window: a 45pt player bar, icon-only section tabs at the top, an album grid /
 album detail view, a Songs table, an Artists browser, a playlist overview, a
 queue overlay, and a 24pt status bar.
 
+![WebTracks home view with an album grid and a track playing](docs/home-playing.png)
+
 ## Features
 
 - Plays FLAC / MP3 / M4A / WAV / AIFF / OGG / Opus, with HTTP Range seeking.
@@ -612,6 +614,7 @@ the canonical hash route.
 webtracks/
   config.example.yaml     complete tracked configuration template
   config.yaml             local configuration (gitignored)
+  docs/                   README screenshots
   server.py               Flask app, API, scan jobs, CLI entry point
   tracks_transcode.py     ffmpeg transcoding and the shared in-memory cache
   tracks_config.py        reads config.yaml and environment variables
