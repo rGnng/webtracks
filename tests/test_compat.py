@@ -1,0 +1,651 @@
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import wave
+from unittest import mock
+
+from PIL import Image
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from server import Config, create_app, main  # noqa: E402
+from tracks_config import load_settings  # noqa: E402
+from tracks_db import LibraryDB, LibraryCatalog  # noqa: E402
+from tracks_identity import (  # noqa: E402
+    album_uuid,
+    artist_uuid,
+    library_uuid,
+    normalize_relative_path,
+    song_uuid,
+    stable_uuid,
+    swift_lower,
+)
+from tracks_scanner import (  # noqa: E402
+    ScannedTrack,
+    scan_one,
+    write_artwork_cache,
+)
+
+
+class IdentityTests(unittest.TestCase):
+    def test_stable_uuid_matches_tracks(self):
+        self.assertEqual(
+            song_uuid(
+                "iTunes",
+                "Raver Rage Records/レレレコンピ/01 related.m4a",
+            ),
+            "0B161D2F-A164-B19B-9D78-B2C4B1E72589",
+        )
+        self.assertEqual(
+            artist_uuid("Raver Rage Records"),
+            "43054C1F-0026-CD2F-C882-2A741E57531E",
+        )
+        self.assertEqual(
+            album_uuid(
+                "43054C1F-0026-CD2F-C882-2A741E57531E",
+                "レレレコンピ",
+            ),
+            "5411E3DF-F842-42D2-C519-201B354AEA96",
+        )
+
+    def test_swift_characterwise_lowercase(self):
+        # Python's str.lower() would turn the trailing Sigma into final sigma,
+        # while Swift's lowercased() produces the ordinary lowercase sigma.
+        self.assertEqual(
+            swift_lower("I.M-P.U.L.S.Σ"), "i.m-p.u.l.s.σ"
+        )
+        self.assertEqual(normalize_relative_path("/A/B.flac"), "A/B.flac")
+
+
+class DatabaseTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="tracks-db-test-")
+        self.music = os.path.join(self.root, "Music")
+        os.makedirs(os.path.join(self.music, "Artist", "Album"))
+        self.db = LibraryDB(os.path.join(self.root, "library.sqlite"))
+        self.db.ensure_schema()
+        self.library = self.db.ensure_library(self.music, "testlib")
+        self.path = os.path.join(self.music, "Artist", "Album", "01 Song.flac")
+        self.track = ScannedTrack(
+            path=self.path,
+            title="Song",
+            artist="Artist",
+            album_artist="Artist",
+            album="Album",
+            genre="Pop",
+            year="2024",
+            track=1,
+            track_total=2,
+            disc=0,
+            disc_total=0,
+            comments="hello",
+            duration=123.5,
+            has_artwork=True,
+            mtime=1_700_000_000.0,
+            file_size=1234,
+        )
+        self.db.sync_tracks([self.track], self.db.load_libraries())
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_schema_and_stable_ids(self):
+        conn = sqlite3.connect(self.db.path)
+        try:
+            columns = [
+                row[1] for row in conn.execute("PRAGMA table_info(songs)")
+            ]
+            self.assertEqual(
+                columns,
+                [
+                    "id", "path", "library_id", "title", "artist_id",
+                    "album_id", "genre", "year", "track", "track_total",
+                    "disc", "disc_total", "comments", "duration",
+                    "date_added", "play_count", "rating", "loved",
+                    "last_played", "skip_count", "mtime", "file_size",
+                ],
+            )
+            song = conn.execute("SELECT * FROM songs").fetchone()
+            artist = conn.execute(
+                "SELECT id FROM artists WHERE name = 'Artist'"
+            ).fetchone()
+            album = conn.execute(
+                "SELECT id FROM albums WHERE title = 'Album'"
+            ).fetchone()
+            self.assertEqual(
+                song[0],
+                song_uuid("testlib", "Artist/Album/01 Song.flac"),
+            )
+            self.assertEqual(
+                artist[0], artist_uuid("Artist")
+            )
+            self.assertEqual(
+                album[0],
+                album_uuid(artist[0], "Album"),
+            )
+            self.assertEqual(song[14], 1_700_000_000.0)
+            self.assertEqual(song[21], 1234)
+            self.assertIsNone(conn.execute(
+                "SELECT artwork FROM albums"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_upsert_preserves_stars_and_plays(self):
+        db_song = sqlite3.connect(self.db.path)
+        try:
+            song_id = db_song.execute("SELECT id FROM songs").fetchone()[0]
+        finally:
+            db_song.close()
+        self.db.set_loved(song_id, True)
+        self.db.record_play(song_id)
+        self.track.title = "Song Renamed"
+        self.track.duration = 321.0
+        self.db.sync_tracks(
+            [self.track], self.db.load_libraries()
+        )
+        conn = sqlite3.connect(self.db.path)
+        try:
+            row = conn.execute(
+                "SELECT title, duration, loved, play_count, date_added"
+                " FROM songs WHERE id = ?", (song_id,)
+            ).fetchone()
+            self.assertEqual(row, ("Song Renamed", 321.0, 1, 1,
+                                   1_700_000_000.0))
+        finally:
+            conn.close()
+
+    def test_catalog_and_playlists(self):
+        catalog = LibraryCatalog(self.db.path)
+        boot = catalog.bootstrap_payload()
+        self.assertEqual(boot["libraryStats"]["songCount"], 1)
+        self.assertEqual(len(boot["albums"]), 1)
+        playlist = catalog.create_playlist("Test Playlist")
+        catalog.add_to_playlist(
+            playlist["id"], [catalog.all_songs[0]["id"]]
+        )
+        detail = catalog.playlist_payload(playlist["id"])
+        self.assertEqual(len(detail["songs"]), 1)
+        self.assertEqual(detail["songs"][0]["addSequence"], 1)
+
+
+    def test_rekey_preserves_metadata_and_stable_ids(self):
+        conn = sqlite3.connect(self.db.path)
+        conn.row_factory = sqlite3.Row
+        song = dict(conn.execute("SELECT * FROM songs").fetchone())
+        conn.execute(
+            "UPDATE songs SET loved = 1, play_count = 7 WHERE id = ?",
+            (song["id"],),
+        )
+        conn.execute(
+            "INSERT INTO playlists(id, name, date_created, date_modified)"
+            " VALUES('playlist-1', 'Rekey Test', 1, 1)"
+        )
+        conn.execute(
+            "INSERT INTO playlist_items(playlist_id, song_id, position,"
+            " added_at) VALUES('playlist-1', ?, 0, 1)",
+            (song["id"],),
+        )
+        conn.commit()
+        conn.close()
+
+        result = self.db.rekey_libraries()
+        conn = sqlite3.connect(self.db.path)
+        conn.row_factory = sqlite3.Row
+        rekeyed = dict(conn.execute("SELECT * FROM songs").fetchone())
+        item = dict(conn.execute(
+            "SELECT * FROM playlist_items WHERE playlist_id = 'playlist-1'"
+        ).fetchone())
+        library = dict(conn.execute("SELECT * FROM libraries").fetchone())
+        conn.close()
+        self.assertEqual(rekeyed["id"], song["id"])
+        self.assertEqual(rekeyed["loved"], 1)
+        self.assertEqual(rekeyed["play_count"], 7)
+        self.assertEqual(item["song_id"], song["id"])
+        self.assertTrue(result["backup"])
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(os.path.dirname(self.db.path), result["backup"])
+            )
+        )
+
+        conn = sqlite3.connect(self.db.path)
+        conn.execute(
+            "UPDATE libraries SET identifier = 'renamedlib' WHERE id = ?",
+            (library["id"],),
+        )
+        conn.commit()
+        conn.close()
+        second = self.db.rekey_libraries()
+        conn = sqlite3.connect(self.db.path)
+        conn.row_factory = sqlite3.Row
+        changed = dict(conn.execute("SELECT * FROM songs").fetchone())
+        conn.close()
+        expected = song_uuid(
+            "renamedlib", normalize_relative_path("Artist/Album/01 Song.flac")
+        )
+        self.assertEqual(changed["id"], expected)
+        self.assertNotEqual(changed["id"], song["id"])
+        self.assertIn(song["id"], second["songIDMap"])
+
+
+class ArtworkTests(unittest.TestCase):
+    def test_cache_filename_and_size(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Image.new("RGB", (1200, 800), (120, 30, 200))
+            buf = os.path.join(root, "source.png")
+            source.save(buf)
+            with open(buf, "rb") as handle:
+                data = handle.read()
+            album_id = stable_uuid("album|test")
+            cache = os.path.join(root, "Artwork")
+            self.assertTrue(
+                write_artwork_cache(data, album_id, cache, 80)
+            )
+            target = os.path.join(cache, album_id + ".jpg")
+            self.assertTrue(os.path.isfile(target))
+            with Image.open(target) as image:
+                self.assertEqual(image.format, "JPEG")
+                self.assertEqual(image.size, (500, 333))
+
+
+@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required")
+class ScannerEndToEndTests(unittest.TestCase):
+    def test_flac_scan_creates_database_and_cover(self):
+        with tempfile.TemporaryDirectory() as root:
+            music = os.path.join(root, "Library")
+            album_dir = os.path.join(music, "Someone", "Test Album")
+            os.makedirs(album_dir)
+            cover_path = os.path.join(root, "cover.png")
+            Image.new("RGB", (640, 640), (10, 120, 90)).save(cover_path)
+            flac_path = os.path.join(album_dir, "01 Track.flac")
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-v", "error", "-y",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                    "-i", cover_path,
+                    "-map", "0:a", "-map", "1:v",
+                    "-c:a", "flac", "-c:v", "png",
+                    "-disposition:v", "attached_pic",
+                    "-metadata", "TITLE=Track One",
+                    "-metadata", "ARTIST=Track Artist",
+                    "-metadata", "ALBUMARTIST=Album Artist",
+                    "-metadata", "ALBUM=Test Album",
+                    "-metadata", "GENRE=Electronic",
+                    "-metadata", "DATE=2024-03-01",
+                    "-metadata", "TRACKNUMBER=1/2",
+                    "-metadata", "COMMENT=Cover test",
+                    flac_path,
+                ],
+                check=True,
+            )
+            db = LibraryDB(os.path.join(root, "library.sqlite"))
+            artwork = os.path.join(root, "Artwork")
+            result = scan_one(
+                db, music, identifier="testlib", mode="full",
+                artwork_dir=artwork, force=True,
+            )
+            self.assertEqual(result["tracks"], 1)
+            self.assertEqual(result["artwork"], 1)
+            conn = sqlite3.connect(db.path)
+            try:
+                row = conn.execute(
+                    "SELECT s.id, s.title, s.duration, s.track, s.track_total,"
+                    " s.genre, s.year, aar.name, al.title, al.id"
+                    " FROM songs s JOIN albums al ON al.id = s.album_id"
+                    " JOIN artists aar ON aar.id = al.artist_id"
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertEqual(
+                row[0], song_uuid("testlib", "Someone/Test Album/01 Track.flac")
+            )
+            self.assertEqual(row[1], "Track One")
+            self.assertAlmostEqual(row[2], 2.0, places=1)
+            self.assertEqual(row[3], 1)
+            self.assertEqual(row[4], 2)
+            self.assertEqual(row[5], "Electronic")
+            self.assertEqual(row[6], "2024-03-01")
+            self.assertEqual(row[7], "Album Artist")
+            self.assertEqual(row[8], "Test Album")
+            target = os.path.join(artwork, row[9].upper() + ".jpg")
+            self.assertTrue(os.path.isfile(target))
+            with Image.open(target) as image:
+                self.assertLessEqual(max(image.size), 500)
+
+
+class ApiTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="tracks-api-test-")
+        self.music = os.path.join(self.root, "Music")
+        os.makedirs(self.music)
+        self.audio_path = os.path.join(self.music, "tone.wav")
+        with wave.open(self.audio_path, "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(8000)
+            handle.writeframes(b"\x00\x00" * 8000)
+        self.db_path = os.path.join(self.root, "library.sqlite")
+        self.db = LibraryDB(self.db_path)
+        self.db.ensure_schema()
+        self.library = self.db.ensure_library(self.music, "api")
+        track = ScannedTrack(
+            path=self.audio_path,
+            title="Tone",
+            artist="Tester",
+            album_artist="Tester",
+            album="Test Album",
+            genre="Test",
+            year="2026",
+            track=1,
+            track_total=1,
+            disc=0,
+            disc_total=0,
+            comments="",
+            duration=1.0,
+            has_artwork=False,
+            mtime=1_700_000_000.0,
+            file_size=os.path.getsize(self.audio_path),
+        )
+        self.db.sync_tracks([track], self.db.load_libraries())
+        self.artwork = os.path.join(self.root, "Artwork")
+        app = create_app(
+            Config(self.db_path, self.artwork, read_only=False)
+        )
+        self.client = app.test_client()
+        boot = self.client.get("/api/bootstrap").get_json()
+        self.song_id = boot["albums"][0]["id"]
+        songs = self.client.get("/api/songs").get_json()["songs"]
+        self.song_id = songs[0]["id"]
+        self.album_id = songs[0]["albumId"]
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_bootstrap_songs_audio_and_artwork(self):
+        boot = self.client.get("/api/bootstrap").get_json()
+        self.assertFalse(boot["needsSetup"])
+        self.assertEqual(boot["libraryStats"]["songCount"], 1)
+        songs = self.client.get("/api/songs").get_json()["songs"]
+        self.assertEqual(len(songs), 1)
+        album = self.client.get(
+            "/api/albums/" + self.album_id
+        )
+        self.assertEqual(album.status_code, 200)
+        audio = self.client.get("/api/audio/" + self.song_id)
+        self.assertEqual(audio.status_code, 200)
+        self.assertEqual(audio.mimetype, "audio/wav")
+        audio.close()
+        song = self.client.get("/api/songs/" + self.song_id)
+        self.assertEqual(song.status_code, 200)
+        self.assertEqual(song.get_json()["song"]["id"], self.song_id)
+        missing = self.client.get(
+            "/api/songs/00000000-0000-0000-0000-000000000000"
+        )
+        self.assertEqual(missing.status_code, 404)
+        fallback = self.client.get("/api/artwork/" + self.album_id)
+        self.assertEqual(fallback.status_code, 200)
+        self.assertEqual(fallback.mimetype, "image/svg+xml")
+
+    def test_star_and_playlist(self):
+        response = self.client.post(
+            "/api/songs/%s/star" % self.song_id,
+            json={"loved": True},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["loved"])
+        self.assertEqual(
+            self.client.post(
+                "/api/playlists", json={"name": "API Playlist"}
+            ).status_code,
+            401,
+        )
+        token = self.client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        created = self.client.post(
+            "/api/playlists",
+            json={"name": "API Playlist"},
+            headers={"Authorization": "Bearer " + token},
+        ).get_json()["playlist"]
+        response = self.client.post(
+            "/api/playlists/%s/songs" % created["id"],
+            json={"songIds": [self.song_id]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["added"], 1)
+        detail = self.client.get(
+            "/api/playlists/" + created["id"]
+        ).get_json()
+        self.assertEqual(len(detail["songs"]), 1)
+        self.assertEqual(detail["songs"][0]["id"], self.song_id)
+        removed = self.client.delete(
+            "/api/playlists/%s/songs" % created["id"],
+            json={"songIds": [self.song_id]},
+        )
+        self.assertEqual(removed.status_code, 200)
+        self.assertEqual(removed.get_json()["removed"], 1)
+
+
+    def test_setup_scan_uses_only_configured_libraries(self):
+        app = create_app(
+            Config(
+                self.db_path,
+                self.artwork,
+                read_only=False,
+                music_dirs=[self.music],
+            )
+        )
+        client = app.test_client()
+        token = client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+        started = client.post(
+            "/api/setup/scan",
+            json={
+                "mode": "full",
+                "root": "/tmp/not-configured",
+                "identifier": "ignored",
+            },
+            headers=headers,
+        )
+        self.assertEqual(started.status_code, 202)
+        job = started.get_json()["job"]
+        for _ in range(100):
+            if not job.get("running"):
+                break
+            time.sleep(0.05)
+            job = client.get("/api/scan").get_json()
+        self.assertFalse(job["running"])
+        self.assertEqual(job["phase"], "Done")
+        self.assertEqual(
+            job["summary"]["libraries"],
+            [os.path.realpath(self.music)],
+        )
+
+    def test_setup_rekey_requires_admin_and_finishes(self):
+        self.assertEqual(
+            self.client.post("/api/setup/rekey").status_code, 401
+        )
+        token = self.client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+        started = self.client.post("/api/setup/rekey", headers=headers)
+        self.assertEqual(started.status_code, 202)
+        job = started.get_json()["job"]
+        for _ in range(60):
+            if not job.get("running"):
+                break
+            time.sleep(0.05)
+            job = self.client.get("/api/setup/rekey").get_json()
+        self.assertFalse(job["running"])
+        self.assertEqual(job["phase"], "Done")
+        self.assertEqual(job["summary"]["songs"], 1)
+        self.assertTrue(job["summary"]["backup"])
+        songs = self.client.get("/api/songs").get_json()["songs"]
+        self.assertEqual(len(songs), 1)
+
+    def test_setup_admin_auth_and_scan_guards(self):
+        setup = self.client.get("/api/setup")
+        self.assertEqual(setup.status_code, 200)
+        payload = setup.get_json()
+        self.assertEqual(payload["name"], "Setup")
+        self.assertFalse(payload["authenticated"])
+        self.assertEqual(payload["libraries"], [])
+        wrong = self.client.post(
+            "/api/setup/login", json={"password": "wrong"}
+        )
+        self.assertEqual(wrong.status_code, 401)
+        login = self.client.post(
+            "/api/setup/login", json={"password": "1"}
+        )
+        self.assertEqual(login.status_code, 200)
+        token = login.get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+        authed = self.client.get("/api/setup", headers=headers).get_json()
+        self.assertTrue(authed["authenticated"])
+        self.assertEqual(
+            self.client.post(
+                "/api/setup/scan", json={"mode": "quick"}
+            ).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/setup/scan", json={"mode": "quick"}, headers=headers
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.post("/api/setup/rekey").status_code,
+            401,
+        )
+
+
+class ConfigTests(unittest.TestCase):
+    def _clean_env(self):
+        env = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith("WEBTRACKS_")
+        }
+        return mock.patch.dict(os.environ, env, clear=True)
+
+    def test_paths_are_relative_to_the_config_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"database_dir": "state",'
+                    ' "music_dirs": ["music", "~/Music"]}'
+                )
+            with self._clean_env():
+                settings = load_settings(path)
+            self.assertEqual(
+                settings["database"],
+                os.path.join(root, "state", "library.sqlite"),
+            )
+            self.assertEqual(
+                settings["artwork"],
+                os.path.join(root, "state", "Artwork"),
+            )
+            self.assertEqual(
+                settings["music_dirs"],
+                [os.path.join(root, "music"),
+                 os.path.expanduser("~/Music")],
+            )
+
+    def test_transcode_cache_size_from_config_and_env(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('{"transcode_cache_mb": 256}')
+            with self._clean_env():
+                settings = load_settings(path)
+                self.assertEqual(settings["transcode_cache_mb"], 256)
+                os.environ["WEBTRACKS_TRANSCODE_CACHE_MB"] = "64"
+                self.assertEqual(
+                    load_settings(path)["transcode_cache_mb"], 64
+                )
+                del os.environ["WEBTRACKS_TRANSCODE_CACHE_MB"]
+                os.environ["WEBTRACKS_AAC_CACHE_MB"] = "32"
+                self.assertEqual(
+                    load_settings(path)["transcode_cache_mb"], 32
+                )
+
+    def test_album_sort_defaults_and_override(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('{"database_dir": "var"}')
+            with self._clean_env():
+                settings = load_settings(path)
+                self.assertEqual(settings["album_sort"], "recentlyAdded")
+                self.assertTrue(settings["album_sort_descending"])
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"database_dir": "var", "album_sort": "artist",'
+                    ' "album_sort_descending": false}'
+                )
+            with self._clean_env():
+                settings = load_settings(path)
+                self.assertEqual(settings["album_sort"], "artist")
+                self.assertFalse(settings["album_sort_descending"])
+                os.environ["WEBTRACKS_ALBUM_SORT"] = "year"
+                os.environ["WEBTRACKS_ALBUM_SORT_DESCENDING"] = "1"
+                settings = load_settings(path)
+                self.assertEqual(settings["album_sort"], "year")
+                self.assertTrue(settings["album_sort_descending"])
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"database_dir": "var", "album_sort": "unknown"}'
+                )
+            with self._clean_env():
+                self.assertEqual(
+                    load_settings(path)["album_sort"], "recentlyAdded"
+                )
+
+    def test_admin_password_hash_default_and_override(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('{"database_dir": "var"}')
+            with self._clean_env():
+                self.assertEqual(
+                    load_settings(path)["admin_password_sha1"],
+                    "356a192b7913b04c54574d18c28d46e6395428ab",
+                )
+                os.environ["WEBTRACKS_ADMIN_PASSWORD_SHA1"] = (
+                    "b" * 40
+                )
+                self.assertEqual(
+                    load_settings(path)["admin_password_sha1"], "b" * 40
+                )
+
+    def test_init_creates_local_database_and_artwork_dir(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('{"database_dir": "var"}')
+            with self._clean_env():
+                code = main(["init", "--config", path])
+            self.assertEqual(code, 0)
+            self.assertTrue(
+                LibraryDB(
+                    os.path.join(root, "var", "library.sqlite")
+                ).check_schema()
+            )
+            self.assertTrue(
+                os.path.isdir(os.path.join(root, "var", "Artwork"))
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
