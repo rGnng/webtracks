@@ -4153,7 +4153,6 @@
             <option value="asc"${!albumSortDescending ? " selected" : ""}>Ascending</option>
           </select>
         </div>
-        <div class="field-help">Defaults apply when the player loads. URL format is used for copied links.</div>
         <div class="setup-settings-actions">
           <button class="primary-button" type="button"
                   data-action="setup-save-settings" ${settingsDisabled}>
