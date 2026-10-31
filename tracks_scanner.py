@@ -6,8 +6,9 @@ read with ``ffprobe`` and their embedded cover is extracted with ``ffmpeg``;
 the resulting database rows use exactly the same stable IDs, path layout and
 artwork cache naming as Tracks.
 
-Artwork cache files are ``<ALBUM-UUID>.jpg``, at most 500x500 pixels, JPEG
-quality 80 by default.  Album cover extraction is attempted once per album,
+Artwork cache files are ``<ALBUM-UUID>.jpg``, at most ``cover_size`` pixels on
+the longest edge (500 by default), with configurable JPEG quality (80 by
+default).  Album cover extraction is attempted once per album,
 using the first track in scan order that carries a picture.
 """
 
@@ -39,6 +40,7 @@ SUPPORTED_EXTENSIONS = {
 }
 
 ARTWORK_MAX_PIXEL = 500
+DEFAULT_COVER_SIZE = ARTWORK_MAX_PIXEL
 DEFAULT_JPEG_QUALITY = 80
 READ_WORKERS = 8
 ARTWORK_WORKERS = 6
@@ -483,7 +485,10 @@ def extract_artwork(track):
     return None
 
 
-def write_artwork_cache(data, album_id, cache_dir, jpeg_quality=DEFAULT_JPEG_QUALITY):
+def write_artwork_cache(
+    data, album_id, cache_dir, jpeg_quality=DEFAULT_JPEG_QUALITY,
+    cover_size=DEFAULT_COVER_SIZE,
+):
     if not data or Image is None:
         return False
     try:
@@ -499,8 +504,9 @@ def write_artwork_cache(data, album_id, cache_dir, jpeg_quality=DEFAULT_JPEG_QUA
                 image = background
             else:
                 image = image.convert("RGB")
+            cover_size = max(16, min(2000, int(cover_size)))
             image.thumbnail(
-                (ARTWORK_MAX_PIXEL, ARTWORK_MAX_PIXEL), Image.LANCZOS
+                (cover_size, cover_size), Image.LANCZOS
             )
             target = os.path.join(cache_dir, "%s.jpg" % album_id.upper())
             temporary = target + ".tmp"
@@ -627,7 +633,7 @@ def _read_tracks(paths, progress=None):
 
 
 def _write_artwork(tracks, cache_dir, jpeg_quality, progress=None,
-                   album_ids_by_key=None):
+                   album_ids_by_key=None, cover_size=DEFAULT_COVER_SIZE):
     groups = {}
     for track in tracks:
         if not track.has_artwork:
@@ -650,7 +656,7 @@ def _write_artwork(tracks, cache_dir, jpeg_quality, progress=None,
             data = extract_artwork(track)
             target_id = album_id or album_id_for_track(track)
             if data and write_artwork_cache(
-                data, target_id, cache_dir, jpeg_quality
+                data, target_id, cache_dir, jpeg_quality, cover_size
             ):
                 return True
         return False
@@ -693,7 +699,7 @@ def _remove_cached_artwork(album_ids, cache_dir):
 
 def scan_one(db, root, identifier=None, mode="quick", prune=False,
              artwork_dir=None, jpeg_quality=DEFAULT_JPEG_QUALITY,
-             force=False, progress=None):
+             cover_size=DEFAULT_COVER_SIZE, force=False, progress=None):
     """Create/update one library and its artwork cache.
 
     Returns a summary dictionary.  ``progress`` is called as
@@ -729,7 +735,7 @@ def scan_one(db, root, identifier=None, mode="quick", prune=False,
         report("Writing Artwork", 0, None, "Preparing cover cache")
         cache_written, artwork_errors = _write_artwork(
             tracks, artwork_dir, jpeg_quality, progress=report,
-            album_ids_by_key=album_ids_by_key,
+            album_ids_by_key=album_ids_by_key, cover_size=cover_size,
         )
         errors.extend(artwork_errors)
 

@@ -116,7 +116,8 @@ the built-in defaults on first run.
 | `database_dir` | Directory for the database and artwork cache. Relative paths are resolved against the directory containing `config.yaml`. The database is always `library.sqlite`, and artwork goes in the `Artwork/` subdirectory. |
 | `host` / `port` | Listen address, default `127.0.0.1:8765`. Set `host: 0.0.0.0` for LAN access. |
 | `read_only` | When `true`, all database writes are blocked: stars, play counts, playlist changes, scans, and ReKey. Playback, streaming, and browsing still work. |
-| `jpeg_quality` | Artwork JPEG quality, 15–100, default 80. |
+| `jpeg_quality` | Album art cache JPEG quality, 15–100, default 80. |
+| `cover_size` | Maximum album art cache width/height in pixels, 16–2000, default 500. |
 | `transcode_cache_mb` | Transcode cache limit in MiB, shared across all qualities, default 512. `0` transcodes without retaining output. |
 | `album_sort` | Default Albums sort: `recentlyAdded`, `album`, `artist`, or `year`; defaults to `recentlyAdded`. |
 | `album_sort_descending` | Whether the default sort is descending; defaults to `true` (recently added first). |
@@ -175,6 +176,8 @@ export WEBTRACKS_ALBUM_SORT_DESCENDING=1
 export WEBTRACKS_ADMIN_PASSWORD_SHA1=356a192b7913b04c54574d18c28d46e6395428ab
 export WEBTRACKS_LOG_FORMAT=text
 export WEBTRACKS_RATE_LIMIT=28
+export WEBTRACKS_COVER_SIZE=500
+export WEBTRACKS_JPEG_QUALITY=80
 ```
 
 Read-only mode:
@@ -236,6 +239,7 @@ Options:
 | `--force` | Ignores the mtime/size cache, re-reads every file, and rewrites the artwork cache. |
 | `--prune` | Deletes song rows that belong to the library but no longer exist on disk. |
 | `--jpeg-quality N` | Artwork JPEG quality, 15–100, default 80. |
+| `--cover-size N` | Maximum artwork cache width/height, 16–2000, default 500. |
 | `--config PATH` | Config file to use; defaults to `config.yaml` next to `server.py`. |
 
 Incremental scan:
@@ -404,11 +408,17 @@ The FLAC reader in `tracks_scanner.py` is a section-by-section port of
 - Filename: `<ALBUM-UUID>.jpg`, uppercase UUID, same as Tracks.
 - Default directory: `<database_dir>/Artwork`, which is `data/Artwork` inside
   the project by default.
-- Longest edge 500 px, JPEG quality 80 (configurable); images smaller than
-  500 px keep their original size.
+- Longest edge `cover_size` px (default 500), JPEG quality `jpeg_quality`
+  (default 80); images smaller than the configured size keep their original
+  size.
 - Images are rotated by EXIF Orientation before resizing, and transparency is
   composited onto a white background.
 - Writes are atomic via a temporary file plus `os.replace`.
+- `/api/artwork/<album-id>` serves the cached JPEG file directly with
+  `send_file`; it does not resize or re-encode per request. Missing covers use
+  a generated SVG fallback.
+- Changing `cover_size` or `jpeg_quality` affects newly written covers. Run a
+  full scan with force (or **Setup → Full Scan**) to rebuild existing covers.
 
 ### Known differences
 

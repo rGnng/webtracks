@@ -31,6 +31,7 @@ DEFAULT_SETTINGS = {
     "port": 8765,
     "read_only": False,
     "jpeg_quality": 80,
+    "cover_size": 500,
     "transcode_cache_mb": 512,
     "album_sort": "recentlyAdded",
     "album_sort_descending": True,
@@ -80,6 +81,14 @@ def _as_quality(value, fallback):
     except (TypeError, ValueError):
         return fallback
     return max(15, min(100, quality))
+
+
+def _as_cover_size(value, fallback):
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(16, min(2000, size))
 
 
 def _as_megabytes(value, fallback):
@@ -253,6 +262,10 @@ def load_settings(config_path=None):
         os.environ.get("WEBTRACKS_JPEG_QUALITY", values.get("jpeg_quality")),
         DEFAULT_SETTINGS["jpeg_quality"],
     )
+    cover_size = _as_cover_size(
+        os.environ.get("WEBTRACKS_COVER_SIZE", values.get("cover_size")),
+        DEFAULT_SETTINGS["cover_size"],
+    )
     cache_env = os.environ.get("WEBTRACKS_TRANSCODE_CACHE_MB")
     if cache_env is None:
         # Accept the former AAC-only name for existing local configs.
@@ -349,6 +362,7 @@ def load_settings(config_path=None):
         "port": port,
         "read_only": read_only,
         "jpeg_quality": jpeg_quality,
+        "cover_size": cover_size,
         "transcode_cache_mb": transcode_cache_mb,
         "album_sort": album_sort,
         "album_sort_descending": album_sort_descending,

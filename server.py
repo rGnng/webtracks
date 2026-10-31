@@ -77,7 +77,8 @@ AUDIO_TYPES = {
 
 class Config:
     def __init__(self, database, artwork, read_only=False, jpeg_quality=None,
-                 music_dirs=None, config_path=None, transcode_cache_mb=None,
+                 cover_size=None, music_dirs=None, config_path=None,
+                 transcode_cache_mb=None,
                  album_sort=None, album_sort_descending=None,
                  admin_password_sha1=None, libraries=None,
                  logs_dir=None, log_level=None, log_format=None,
@@ -89,6 +90,13 @@ class Config:
             jpeg_quality or DEFAULT_JPEG_QUALITY
         )
         self.jpeg_quality = max(15, min(100, self.jpeg_quality))
+        try:
+            self.cover_size = int(
+                cover_size if cover_size is not None else 500
+            )
+        except (TypeError, ValueError):
+            self.cover_size = 500
+        self.cover_size = max(16, min(2000, self.cover_size))
         if libraries is None:
             libraries = [
                 {"path": path} for path in (music_dirs or [])
@@ -143,6 +151,7 @@ class Config:
             settings["artwork"],
             read_only=settings.get("read_only", False),
             jpeg_quality=settings.get("jpeg_quality"),
+            cover_size=settings.get("cover_size"),
             music_dirs=settings.get("music_dirs") or [],
             config_path=settings.get("config_path"),
             transcode_cache_mb=settings.get("transcode_cache_mb"),
@@ -378,6 +387,7 @@ class ScanManager:
                         prune=prune,
                         artwork_dir=self.config.artwork,
                         jpeg_quality=self.config.jpeg_quality,
+                        cover_size=self.config.cover_size,
                         force=force,
                         progress=self._progress,
                     )
@@ -1474,6 +1484,10 @@ def main(argv=None):
         help="artwork cache JPEG quality (15-100)",
     )
     parser.add_argument(
+        "--cover-size", type=int, default=None,
+        help="maximum artwork cache width/height in pixels (16-2000)",
+    )
+    parser.add_argument(
         "--transcode-cache-mb", dest="transcode_cache_mb", type=int,
         default=None,
         help="in-memory transcode cache size in MiB (default 512)",
@@ -1503,6 +1517,10 @@ def main(argv=None):
             settings["jpeg_quality"] if args.jpeg_quality is None
             else args.jpeg_quality
         ),
+        cover_size=(
+            settings["cover_size"] if args.cover_size is None
+            else args.cover_size
+        ),
         music_dirs=settings["music_dirs"],
         libraries=settings["libraries"],
         config_path=config_path,
@@ -1531,7 +1549,9 @@ def main(argv=None):
         print("WebTracks")
         print("  config:   %s" % config.config_path)
         print("  database: %s" % config.database)
-        print("  artwork:  %s" % config.artwork)
+        print("  artwork:  %s (%dpx, JPEG %d)" % (
+            config.artwork, config.cover_size, config.jpeg_quality
+        ))
         print("Created an empty library. Add a music folder with:")
         print('  python3 server.py scan --root "/path/to/Music"')
         return 0
@@ -1566,6 +1586,7 @@ def main(argv=None):
                     prune=args.prune,
                     artwork_dir=config.artwork,
                     jpeg_quality=config.jpeg_quality,
+                    cover_size=config.cover_size,
                     force=args.force,
                     progress=progress,
                 )
@@ -1617,7 +1638,9 @@ def main(argv=None):
     print("WebTracks")
     print("  config:   %s" % config.config_path)
     print("  database: %s" % config.database)
-    print("  artwork:  %s" % config.artwork)
+    print("  artwork:  %s (%dpx, JPEG %d)" % (
+        config.artwork, config.cover_size, config.jpeg_quality
+    ))
     try:
         libraries = LibraryDB(
             config.database, read_only=True

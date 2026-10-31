@@ -18,7 +18,9 @@ port: 8765
 # Refuse all database writes: stars, play counts, playlists, scans, and ReKey.
 read_only: false
 
-# Artwork JPEG quality, 15-100.
+# Album art cache: maximum cover width/height in pixels (16-2000) and JPEG
+# quality (15-100). Applies when covers are written during a scan/ReKey.
+cover_size: 500
 jpeg_quality: 80
 
 # Transcode cache limit in MiB, shared across all qualities.

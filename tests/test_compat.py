@@ -300,6 +300,23 @@ class ArtworkTests(unittest.TestCase):
                 self.assertEqual(image.format, "JPEG")
                 self.assertEqual(image.size, (500, 333))
 
+    def test_cache_cover_size_is_configurable(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Image.new("RGB", (1200, 800), (120, 30, 200))
+            buf = os.path.join(root, "source.png")
+            source.save(buf)
+            with open(buf, "rb") as handle:
+                data = handle.read()
+            album_id = stable_uuid("album|cover-size")
+            cache = os.path.join(root, "Artwork")
+            self.assertTrue(
+                write_artwork_cache(data, album_id, cache, 70, 300)
+            )
+            with Image.open(
+                os.path.join(cache, album_id + ".jpg")
+            ) as image:
+                self.assertEqual(image.size, (300, 200))
+
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required")
 class ScannerEndToEndTests(unittest.TestCase):
@@ -1243,6 +1260,31 @@ class ConfigTests(unittest.TestCase):
                 }, handle)
             with self._clean_env():
                 self.assertEqual(load_settings(path)["log_format"], "json")
+
+    def test_cover_size_and_jpeg_quality_overrides(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.yaml")
+            with open(path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({"database_dir": "var"}, handle)
+            with self._clean_env():
+                settings = load_settings(path)
+                self.assertEqual(settings["cover_size"], 500)
+                self.assertEqual(settings["jpeg_quality"], 80)
+                os.environ["WEBTRACKS_COVER_SIZE"] = "300"
+                os.environ["WEBTRACKS_JPEG_QUALITY"] = "65"
+                settings = load_settings(path)
+                self.assertEqual(settings["cover_size"], 300)
+                self.assertEqual(settings["jpeg_quality"], 65)
+            with open(path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({
+                    "database_dir": "var",
+                    "cover_size": 2000,
+                    "jpeg_quality": 100,
+                }, handle)
+            with self._clean_env():
+                settings = load_settings(path)
+                self.assertEqual(settings["cover_size"], 2000)
+                self.assertEqual(settings["jpeg_quality"], 100)
 
     def test_rate_limit_defaults_and_env_override(self):
         with tempfile.TemporaryDirectory() as root:
