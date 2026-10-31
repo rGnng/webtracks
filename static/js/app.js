@@ -1096,17 +1096,21 @@
   }
 
   function renderSectionTabs() {
-    el.sectionTabs.innerHTML = SECTIONS.map((section) => {
-      const active = sectionTabActive(section.id);
-      return `
-        <button class="section-tab${active ? " active" : ""}"
-                type="button" data-section="${section.id}"
+    const tabs = $$(".section-tab", el.sectionTabs);
+    if (!tabs.length) {
+      el.sectionTabs.innerHTML = SECTIONS.map((section) => `
+        <button class="section-tab" type="button" data-section="${section.id}"
                 title="${esc(section.label)}"
-                aria-label="${esc(section.label)}"
-                ${active ? 'aria-current="page"' : ""}>
+                aria-label="${esc(section.label)}">
           ${icon(section.icon)}
-        </button>`;
-    }).join("");
+        </button>`).join("");
+    }
+    $$(".section-tab", el.sectionTabs).forEach((tab) => {
+      const active = sectionTabActive(tab.dataset.section || "");
+      tab.classList.toggle("active", active);
+      if (active) tab.setAttribute("aria-current", "page");
+      else tab.removeAttribute("aria-current");
+    });
   }
 
   function openPlaylistDialog(mode, playlist) {
@@ -4174,7 +4178,15 @@
         </div>
       </div>`;
     try {
-      const info = await api("/api/setup", { headers: adminHeaders() });
+      const [info, stats] = await Promise.all([
+        api("/api/setup", { headers: adminHeaders() }),
+        api("/api/setup/stats", { headers: adminHeaders() })
+          .catch(() => null),
+      ]);
+      if (stats) {
+        state.setupStats = stats;
+        state.statsError = "";
+      }
       applySetupInfo(info);
       if (info.rekey && info.rekey.running) {
         renderRekeyProgress(info.rekey);
@@ -4257,21 +4269,46 @@
 
   function setupStatsHtml() {
     const stats = state.setupStats;
-    if (!stats) {
-      return `<div class="field-help">${state.statsError
-        ? esc(state.statsError) : "Loading usage statistics…"}</div>`;
-    }
-    const totals = stats.totals || {};
-    const cards = [
-      ["Visitors", Number(totals.visitors || 0).toLocaleString()],
-      ["Requests", Number(totals.requests || 0).toLocaleString()],
-      ["Transferred", fmtCacheSize(totals.bytesSent)],
-      ["Songs played", Number(totals.songsPlayed || 0).toLocaleString()],
-      ["Unique songs", Number(totals.uniqueSongs || 0).toLocaleString()],
-      ["Playlist actions", Number(totals.playlistActions || 0).toLocaleString()],
-    ];
     const detailed = state.adminAuthenticated;
-    const actions = !detailed ? "" : [
+    const totals = (stats && stats.totals) || {};
+    const cards = [
+      ["Visitors", "visitors", false],
+      ["Requests", "requests", false],
+      ["Transferred", "bytesSent", true],
+      ["Songs played", "songsPlayed", false],
+      ["Unique songs", "uniqueSongs", false],
+      ["Playlist actions", "playlistActions", false],
+    ].map(([label, key, bytes]) => {
+      const value = stats
+        ? (bytes
+          ? fmtCacheSize(totals[key])
+          : Number(totals[key] || 0).toLocaleString())
+        : "—";
+      return `
+        <div class="setup-stat${stats ? "" : " placeholder"}">
+          <span class="setup-stat-value">${esc(value)}</span>
+          <span class="setup-stat-label">${esc(label)}</span>
+        </div>`;
+    }).join("");
+    const since = stats
+      ? `Since ${fmtStatsTime(stats.since, true)}`
+      : (state.statsError || "Loading…");
+    const head = `
+      <div class="setup-stats-head">
+        <div class="field-label">Usage statistics</div>
+        <div class="field-help">${esc(since)}</div>
+      </div>
+      <div class="setup-stats-grid">${cards}</div>`;
+    if (!detailed) {
+      return head;
+    }
+    if (!stats) {
+      return `${head}
+        <div class="setup-stats-details">
+          <div class="field-help">Loading detailed statistics…</div>
+        </div>`;
+    }
+    const actions = [
       ["Logins", totals.adminLogins],
       ["Admin bruteforce blocked", totals.adminBruteforceBlocked],
       ["Scans", totals.scans],
@@ -4282,7 +4319,7 @@
     ].map(([label, value]) => `
       <span><strong>${Number(value || 0).toLocaleString()}</strong> ${esc(label)}</span>`
     ).join("");
-    const clients = detailed ? (stats.clients || []) : [];
+    const clients = stats.clients || [];
     const rows = clients.map((client) => `
       <tr title="First seen ${esc(fmtStatsTime(client.firstSeen, true))} · ${esc(client.userAgent || "")}">
         <td class="setup-stat-ip">${esc(client.ip || "")}</td>
@@ -4308,19 +4345,11 @@
            ? `<div class="field-help">Showing ${clients.length} of ${Number(stats.clientCount).toLocaleString()} clients</div>`
            : ""}`
       : `<div class="field-help">No traffic recorded yet.</div>`;
-    return `
-      <div class="setup-stats-head">
-        <div class="field-label">Usage statistics</div>
-        <div class="field-help">Since ${esc(fmtStatsTime(stats.since, true))}</div>
-      </div>
-      <div class="setup-stats-grid">
-        ${cards.map(([label, value]) => `
-          <div class="setup-stat">
-            <span class="setup-stat-value">${esc(value)}</span>
-            <span class="setup-stat-label">${esc(label)}</span>
-          </div>`).join("")}
-      </div>
-      ${detailed ? `<div class="setup-stats-actions">${actions}</div>${clientHtml}` : ""}`;
+    return `${head}
+      <div class="setup-stats-details">
+        <div class="setup-stats-actions">${actions}</div>
+        ${clientHtml}
+      </div>`;
   }
 
   function updateSetupStatsView() {
@@ -4866,7 +4895,15 @@
         body: JSON.stringify({ password }),
       });
       setAdminToken(data.token);
-      const info = await api("/api/setup", { headers: adminHeaders() });
+      const [info, stats] = await Promise.all([
+        api("/api/setup", { headers: adminHeaders() }),
+        api("/api/setup/stats", { headers: adminHeaders() })
+          .catch(() => null),
+      ]);
+      if (stats) {
+        state.setupStats = stats;
+        state.statsError = "";
+      }
       applySetupInfo(info);
       state.setupError = "";
       renderSetup();

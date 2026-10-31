@@ -14,7 +14,24 @@
 
   <header id="toolbar" class="toolbar">
     <div class="toolbar-leading">
-      <nav id="section-tabs" class="section-tabs" aria-label="Library sections"></nav>
+      <nav id="section-tabs" class="section-tabs" aria-label="Library sections">
+        <button class="section-tab" type="button" data-section="albums"
+                title="Albums" aria-label="Albums">
+          <svg class="icon"><use href="#i-albums"></use></svg>
+        </button>
+        <button class="section-tab" type="button" data-section="artists"
+                title="Artists" aria-label="Artists">
+          <svg class="icon"><use href="#i-artists"></use></svg>
+        </button>
+        <button class="section-tab" type="button" data-section="songs"
+                title="Songs" aria-label="Songs">
+          <svg class="icon"><use href="#i-music"></use></svg>
+        </button>
+        <button class="section-tab" type="button" data-section="playlists"
+                title="Playlists" aria-label="Playlists">
+          <svg class="icon"><use href="#i-star"></use></svg>
+        </button>
+      </nav>
       <span class="toolbar-divider" aria-hidden="true"></span>
       <div class="transport">
         <button id="prev-button" class="tb-button transport-button" type="button" title="Previous" aria-label="Previous">

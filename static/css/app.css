@@ -2717,6 +2717,28 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.setup-stat.placeholder .setup-stat-value {
+  color: var(--text-3);
+}
+
+.setup-stats-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 214px;
+  min-height: 0;
+}
+
+.setup-stats-details .setup-stats-actions {
+  flex: 0 0 auto;
+}
+
+.setup-stats-details .setup-stats-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
 .setup-stats-actions {
   display: flex;
   flex-wrap: wrap;
