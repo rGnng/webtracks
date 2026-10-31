@@ -156,11 +156,7 @@
     restorePlayer();
     bindEvents();
     applyAudioQualityUI();
-    refreshCacheStatus(true);
-    refreshSystemStatus(true);
-    setInterval(() => {
-      if (!document.hidden) refreshCacheStatus();
-    }, 10000);
+    refreshSystemStatus();
     setInterval(refreshSystemStatus, 5000);
     renderPlayerUI();
     loadInitial().then(async () => {
@@ -835,6 +831,7 @@
         headers: adminHeaders(),
       });
       if (!info) return;
+      renderCacheStatus(info.cache);
       const online = Math.max(0, Number(info.online) || 0);
       if (el.statusOnlineCount) {
         el.statusOnlineCount.textContent = online.toLocaleString();
@@ -874,24 +871,6 @@
         ? details.join(" · ") : "System status";
     } catch (_) {
       if (el.statusSystem) el.statusSystem.title = "System status unavailable";
-    }
-  }
-
-  const cacheStatus = { inFlight: false, lastFetchedAt: 0 };
-
-  async function refreshCacheStatus(force = false) {
-    const now = Date.now();
-    if (cacheStatus.inFlight) return;
-    if (!force && now - cacheStatus.lastFetchedAt < 4000) return;
-    cacheStatus.inFlight = true;
-    try {
-      const info = await api("/api/cache");
-      renderCacheStatus(info);
-      cacheStatus.lastFetchedAt = Date.now();
-    } catch (_) {
-      // The status bar is informational; keep the last value on failure.
-    } finally {
-      cacheStatus.inFlight = false;
     }
   }
 
@@ -6295,7 +6274,7 @@
     audio.addEventListener("loadedmetadata", handleLoadedMetadata);
     audio.addEventListener("loadeddata", () => {
       setAudioBuffering(false);
-      refreshCacheStatus(true);
+      refreshSystemStatus();
     });
     audio.addEventListener("canplay", () => setAudioBuffering(false));
     audio.addEventListener("waiting", () => setAudioBuffering(true));

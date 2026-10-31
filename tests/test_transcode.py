@@ -132,18 +132,23 @@ class TranscodeQualityTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def test_quality_catalog_and_cache_endpoints(self):
+    def test_quality_catalog_and_status_cache(self):
         payload = self.client.get("/api/quality").get_json()
         self.assertEqual(payload["default"], DEFAULT_QUALITY)
         self.assertEqual(payload["qualities"][0]["id"], DEFAULT_QUALITY)
         self.assertEqual(payload["qualities"][0]["bitrate"], 128)
         self.assertNotIn("cache", payload)
-        cache = self.client.get("/api/cache").get_json()
+        status = self.client.post("/api/status").get_json()
+        self.assertIn("cache", status)
+        cache = status["cache"]
         self.assertEqual(cache["mode"], "memory")
         self.assertEqual(cache["maxBytes"], 1024 * 1024)
         self.assertEqual(cache["entries"], 0)
         self.assertEqual(cache["qualities"][0]["id"], DEFAULT_QUALITY)
         self.assertEqual(cache["qualities"][0]["entries"], 0)
+        self.assertEqual(
+            self.client.get("/api/cache").status_code, 404
+        )
 
     def test_configured_quality_default_and_raw(self):
         from server import Config, create_app
@@ -190,7 +195,7 @@ class TranscodeQualityTests(unittest.TestCase):
                          "bytes 0-99/%d" % full_length)
         self.assertEqual(len(ranged.data), 100)
 
-        cache = self.client.get("/api/cache").get_json()
+        cache = self.client.post("/api/status").get_json()["cache"]
         self.assertEqual(cache["entries"], 1)
         self.assertEqual(cache["usedBytes"], full_length)
         self.assertGreaterEqual(cache["hits"], 1)

@@ -1358,10 +1358,6 @@ def create_app(config):
             ],
         })
 
-    @app.get("/api/cache")
-    def api_cache():
-        return _json_response(transcode_cache.stats())
-
     @app.get("/api/rate-limit")
     def api_rate_limit():
         limited, retry_after = rate_limiter.is_limited(_client_ip())
@@ -1897,6 +1893,7 @@ def create_app(config):
             "completed": int(public_job.get("completed") or 0),
             "total": public_job.get("total"),
             "message": public_job.get("message") or "",
+            "cache": transcode_cache.stats(),
         })
 
     @app.get("/api/health")

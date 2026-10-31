@@ -614,7 +614,7 @@ Coverage includes:
   that preserve stars and play counts;
 - artwork cache JPEG sizing and naming;
 - process-lifetime transcode entries, overflow clearing, zero capacity, and oversized entries;
-- `/api/quality`, `/api/cache`, configured audio formats, and HTTP Range;
+- `/api/quality`, `/api/status` (including cache statistics), configured audio formats, and HTTP Range;
 - Setup admin authentication, URL ID format, default album sort, password
   change/token revocation, and rejection of unauthorized scans;
 - scans using only configured directories and ignoring paths sent by the
