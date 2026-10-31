@@ -669,21 +669,36 @@ class ApiTests(unittest.TestCase):
                 if song["id"] == self.song_id
             )
 
-        before = plays()
-        for _ in range(2):
+        clock = [1000.0]
+        with mock.patch(
+            "server.time.monotonic", side_effect=lambda: clock[0]
+        ):
+            before = plays()
+            for _ in range(2):
+                response = self.client.get(
+                    "/api/audio/%s?quality=raw&play=session-1"
+                    % self.song_id
+                )
+                self.assertEqual(response.status_code, 200)
+                response.close()
+            self.assertEqual(plays(), before + 1)
+
             response = self.client.get(
-                "/api/audio/%s?quality=raw&play=session-1" % self.song_id
+                "/api/audio/%s?quality=raw&play=session-2"
+                % self.song_id
             )
             self.assertEqual(response.status_code, 200)
             response.close()
-        self.assertEqual(plays(), before + 1)
+            self.assertEqual(plays(), before + 1)
 
-        response = self.client.get(
-            "/api/audio/%s?quality=raw&play=session-2" % self.song_id
-        )
-        self.assertEqual(response.status_code, 200)
-        response.close()
-        self.assertEqual(plays(), before + 2)
+            clock[0] += 31
+            response = self.client.get(
+                "/api/audio/%s?quality=raw&play=session-2"
+                % self.song_id
+            )
+            self.assertEqual(response.status_code, 200)
+            response.close()
+            self.assertEqual(plays(), before + 2)
         self.assertEqual(
             self.client.post(
                 "/api/songs/%s/played" % self.song_id
@@ -1518,6 +1533,30 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(first["uniqueSongs"], 1)
         self.assertEqual(first["playlistActions"], 1)
         self.assertEqual(first["adminBlocked"], 1)
+
+    def test_keeps_only_the_most_recent_clients(self):
+        clock = [1000.0]
+        analytics = Analytics(clock=lambda: clock[0], max_clients=2)
+        for address in ("192.0.2.1", "192.0.2.2", "192.0.2.3"):
+            clock[0] += 1
+            analytics.record_request(
+                address, "/api/songs", 200, 10, "Browser"
+            )
+        snapshot = analytics.snapshot()
+        self.assertEqual(snapshot["clientCount"], 2)
+        self.assertEqual(snapshot["totals"]["visitors"], 2)
+        self.assertEqual(
+            {client["ip"] for client in snapshot["clients"]},
+            {"192.0.2.2", "192.0.2.3"},
+        )
+
+        analytics.record_request(
+            "192.0.2.2", "/api/songs", 200, 10, "Browser"
+        )
+        self.assertEqual(
+            {client["ip"] for client in analytics.snapshot()["clients"]},
+            {"192.0.2.2", "192.0.2.3"},
+        )
 
 
 class RateLimitTests(unittest.TestCase):

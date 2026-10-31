@@ -37,7 +37,8 @@ queue overlay, and a 24pt status bar.
 - Built-in **Stared** playlist (backed by `songs.loved`) and user playlists.
 - Song stars and play counts are written to the project's own Tracks-compatible
   database. A play is counted when a new audio playback session requests the
-  stream; repeated Range requests for one playback are counted once.
+  stream; repeated Range requests for one playback are counted once, and the
+  same song is counted at most once per 30 seconds per source IP.
 - Public song payloads omit tag comments, last-played timestamps, and skip
   counts; those values remain in `library.sqlite` for compatibility.
 - Play queue: Up Next / History, Play Next, Play Later, Shuffle, Repeat.
@@ -67,8 +68,10 @@ queue overlay, and a 24pt status bar.
   without logging in, while per-IP details with current online status,
   transferred bytes, songs played, playlist actions, scans/ReKey/
   artwork jobs, rate-limit events, and blocked brute-force logins appear after
-  admin login. Presence is keyed by source IP, so multiple tabs on one machine
-  count once. Statistics reset when the server restarts.
+  admin login. The per-IP table keeps only the 50 most recently active
+  addresses; aggregate request and byte counters still include every request.
+  Presence is keyed by source IP, so multiple tabs on one machine count once.
+  Statistics reset when the server restarts.
 - All frontend assets live under `static/`; there are no CDN requests.
 
 ## Requirements

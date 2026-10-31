@@ -304,13 +304,17 @@ class PresenceTracker:
             return {address: 1 for address in self._clients}
 
 
+PLAY_COUNT_COOLDOWN_SECONDS = 30
+
+
 class PlayTracker:
     """Count one play per client playback session.
 
     The web player adds a random ``play`` query parameter to audio requests.
     Range and quality requests reuse it, so a single playback only increments
     the count once. Clients that do not send a token fall back to a per-IP
-    window.
+    window. A separate cooldown key prevents different tokens from inflating
+    the count for the same song.
     """
 
     def __init__(self, ttl=6 * 60 * 60, fallback_ttl=5 * 60,
@@ -1368,8 +1372,13 @@ def create_app(config):
         })
 
     def _record_playback(song_id, quality):
-        play_id = (request.args.get("play") or "").strip()[:128]
         client_ip = _client_ip()
+        cooldown_key = ("cooldown", song_id, client_ip)
+        if not play_tracker.claim(
+            cooldown_key, PLAY_COUNT_COOLDOWN_SECONDS
+        ):
+            return
+        play_id = (request.args.get("play") or "").strip()[:128]
         if play_id:
             key = (song_id, play_id)
             ttl = play_tracker.ttl

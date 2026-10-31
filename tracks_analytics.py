@@ -1,5 +1,6 @@
 """In-memory, process-lifetime usage analytics."""
 
+import collections
 import datetime
 import threading
 import time
@@ -29,11 +30,12 @@ def _iso(value):
 class Analytics:
     """Aggregate traffic, playback, and operation counters per client IP."""
 
-    def __init__(self, clock=None):
+    def __init__(self, clock=None, max_clients=50):
         self._clock = clock or time.time
+        self.max_clients = max(1, int(max_clients))
         self.started_at = self._clock()
         self._lock = threading.RLock()
-        self._clients = {}
+        self._clients = collections.OrderedDict()
         self._requests = 0
         self._bytes_sent = 0
         self._audio_bytes = 0
@@ -71,6 +73,10 @@ class Analytics:
                 "userAgent": "",
             }
             self._clients[address] = client
+            while len(self._clients) > self.max_clients:
+                self._clients.popitem(last=False)
+        else:
+            self._clients.move_to_end(address)
         return client
 
     def record_request(self, address, path, status, bytes_sent, user_agent):
