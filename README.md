@@ -493,7 +493,7 @@ The FLAC reader in `tracks_scanner.py` is a section-by-section port of
 Following the "don't fully implement the frontend yet" scope, the core browsing
 and playback paths are in place, but these are not implemented:
 
-- cross-view Go to Album / Go to Artist navigation and album grid locate;
+- cross-view Go to Artist navigation;
 - marquee selection, column width and order dragging, drag-to-reorder the queue;
 - MiniPlayer, MPD, system Now Playing, and input/output device selection;
 - Get Info, Settings, and the MPD service.
@@ -511,6 +511,8 @@ What is implemented:
   process-lifetime cache, with total usage and entry count in the status bar;
 - album cards, album paging, album detail, the virtualized Songs table, and a
   master-detail Artists view (the Genres view is kept in code but hidden);
+- Right-click **Go to Album** from the Songs and Playlists views. Returning to
+  Albums scrolls to that album's card unless it is already visible;
 - a two-column Playlists view: Stared and playlists on the left, the selected
   playlist's songs on the right. Playlists can be created, renamed, and deleted.
   Creating, renaming, and deleting a playlist require the Setup admin login;

@@ -1289,6 +1289,8 @@
       focusContent();
       return;
     }
+    const previousAlbumId = state.albumDetail
+      ? state.albumDetail.id : null;
     state.section = section;
     state.playlistId = playlistId;
     state.albumDetail = null;
@@ -1338,6 +1340,11 @@
     renderContent();
     updateStatus();
     focusContent();
+    if (section === "albums" && previousAlbumId) {
+      window.requestAnimationFrame(() => {
+        revealAlbumInGrid(previousAlbumId);
+      });
+    }
   }
 
   function focusContent() {
@@ -1953,6 +1960,22 @@
     };
   }
 
+  function revealAlbumInGrid(albumId) {
+    if (!albumId || state.section !== "albums" || state.albumDetail) {
+      return false;
+    }
+    const virtual = state.albumVirtual;
+    if (!virtual) return false;
+    const index = currentSectionAlbumList().findIndex(
+      (album) => album.id === albumId
+    );
+    if (index < 0) return false;
+    virtual.refresh();
+    virtual.scrollToIndex(index);
+    updateAlbumPagerFromScroll();
+    return true;
+  }
+
   function albumSortLabel(value) {
     if (value === "recentlyAdded") return "Recently Added";
     if (value === "artist") return "Artist";
@@ -2081,6 +2104,7 @@
   }
 
   function closeAlbumDetail() {
+    const albumId = state.albumDetail ? state.albumDetail.id : null;
     const scroll = state.albumReturnScroll;
     state.albumDetail = null;
     state.selectedSongs.clear();
@@ -2091,6 +2115,7 @@
     renderContent();
     updateStatus();
     window.requestAnimationFrame(() => {
+      if (albumId && revealAlbumInGrid(albumId)) return;
       const scroller = $(".grid-scroll", el.content);
       if (scroller) scroller.scrollTop = scroll;
     });
@@ -3807,6 +3832,12 @@
     return { songs, index };
   }
 
+  async function goToAlbum(song) {
+    if (!song || !song.albumId) return;
+    await setSection("albums");
+    await openAlbum(song.albumId);
+  }
+
   function contextMenuForSong(song, row, event) {
     event.preventDefault();
     event.stopPropagation();
@@ -3843,12 +3874,21 @@
         icon: "note-list",
         action: () => openAddToPlaylistDialog(targetSongs),
       },
-      {
-        label: "Copy Song Link",
-        icon: "link",
-        action: () => copyRouteLink(songRoute(song.id)),
-      },
     ];
+    if (song.albumId && [
+      "songs", "starred", "playlist", "playlists",
+    ].includes(state.section)) {
+      items.push({
+        label: "Go to Album",
+        icon: "albums",
+        action: () => goToAlbum(song),
+      });
+    }
+    items.push({
+      label: "Copy Song Link",
+      icon: "link",
+      action: () => copyRouteLink(songRoute(song.id)),
+    });
     if ((state.section === "playlist" || state.section === "playlists")
         && state.playlistId && !state.albumDetail) {
       items.push({ separator: true });
