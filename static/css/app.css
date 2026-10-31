@@ -2778,30 +2778,6 @@ button:disabled {
   font-size: 9.5px;
 }
 
-.setup-password-block {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin-top: 4px;
-  padding-top: 10px;
-  border-top: 1px solid var(--hairline);
-}
-
-.setup-password-grid {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.setup-password-grid .text-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.setup-password-grid button {
-  flex: 0 0 auto;
-}
-
 .setup-auth-row {
   display: flex;
   align-items: center;

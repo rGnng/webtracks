@@ -56,10 +56,10 @@ queue overlay, and a 24pt status bar.
 - Per-IP audio download limiting (28 distinct items per minute by default);
   repeated Range requests for one song count once and the UI stays silent when
   the limit is reached.
-- In-memory admin usage statistics: visitors by source IP, transferred bytes,
-  songs played, playlist actions, scans/ReKey/artwork jobs, and rate-limit
-  events. Statistics reset when the server restarts and are only visible after
-  admin login.
+- In-memory admin usage statistics: visitors by source IP with current online
+  connection counts, transferred bytes, songs played, playlist actions,
+  scans/ReKey/artwork jobs, and rate-limit events. Statistics reset when the
+  server restarts and are only visible after admin login.
 - All frontend assets live under `static/`; there are no CDN requests.
 
 ## Requirements
@@ -296,9 +296,9 @@ Once signed in you can:
 - **Settings → Cover size / JPEG quality**: set the album art cache dimensions
   and JPEG quality. Use **Rebuild Artwork** or the next Full Scan to rebuild
   existing covers; and
-- **Settings → Change Password**: replace the admin password. The new SHA-1 is
-  written to `config.yaml`, every admin token is revoked, and you must log in
-  again with the new password.
+- **Admin → Change Password**: button next to Log Out; replace the admin
+  password. The new SHA-1 is written to `config.yaml`, every admin token is
+  revoked, and you must log in again with the new password.
 
 The Setup library list shows each library's ID with its current namespace in
 grey. The music folder path is only shown after signing in. The backend only

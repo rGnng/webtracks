@@ -4276,6 +4276,7 @@
     const rows = clients.map((client) => `
       <tr title="First seen ${esc(fmtStatsTime(client.firstSeen, true))} · ${esc(client.userAgent || "")}">
         <td class="setup-stat-ip">${esc(client.ip || "")}</td>
+        <td class="num">${Number(client.online || 0).toLocaleString()}</td>
         <td>${esc(fmtStatsTime(client.lastSeen))}</td>
         <td class="num">${Number(client.requests || 0).toLocaleString()}</td>
         <td class="num">${fmtCacheSize(client.bytesSent)}</td>
@@ -4286,9 +4287,9 @@
       ? `<div class="setup-stats-table-wrap">
            <table class="setup-stats-table">
              <thead><tr>
-               <th>Client</th><th>Last</th><th class="num">Req</th>
-               <th class="num">Data</th><th class="num">Songs</th>
-               <th class="num">Playlists</th>
+               <th>Client</th><th class="num">Conn</th><th>Last</th>
+               <th class="num">Req</th><th class="num">Data</th>
+               <th class="num">Songs</th><th class="num">Playlists</th>
              </tr></thead>
              <tbody>${rows}</tbody>
            </table>
@@ -4416,24 +4417,6 @@
       ["year", "Year"],
     ].map(([value, label]) => `<option value="${value}"`
       + `${albumSort === value ? " selected" : ""}>${label}</option>`).join("");
-    const passwordHtml = state.adminAuthenticated
-      ? `<div class="setup-password-block">
-           <div class="field-label">Change admin password</div>
-           <div class="setup-password-grid">
-             <input id="setup-new-password" class="text-input" type="password"
-                    autocomplete="new-password" spellcheck="false"
-                    placeholder="New password" aria-label="New admin password">
-             <input id="setup-confirm-password" class="text-input"
-                    type="password" autocomplete="new-password" spellcheck="false"
-                    placeholder="Confirm new password"
-                    aria-label="Confirm new admin password">
-             <button class="secondary-button" type="button"
-                     data-action="setup-change-password" ${settingsDisabled}>
-               Change Password
-             </button>
-           </div>
-         </div>`
-      : "";
     const settingsHtml = `
       <div class="setup-section">
         <div class="field-label">Settings</div>
@@ -4487,6 +4470,8 @@
     const authHtml = state.adminAuthenticated
       ? `<div class="setup-auth-row">
            <span class="setup-auth-state">Admin authenticated</span>
+           <button class="secondary-button" type="button"
+                   data-action="setup-change-password">Change Password</button>
            <button class="secondary-button" type="button" data-action="setup-logout">Log Out</button>
          </div>`
       : `<div class="field">
@@ -4508,7 +4493,6 @@
         <div class="field-label">Admin</div>
         ${authHtml}
         ${errorHtml}
-        ${passwordHtml}
         ${statsHtml}
       </div>`;
     el.modalRoot.innerHTML = `
@@ -4742,15 +4726,70 @@
     }
   }
 
+  function openChangePasswordDialog() {
+    if (!state.adminAuthenticated) {
+      state.setupError = "Log in to change the admin password.";
+      renderSetup();
+      return;
+    }
+    stopSetupStatsPoll();
+    state.modalMode = "admin-password";
+    el.modalRoot.innerHTML = `
+      <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Change Admin Password">
+        <div class="sheet-header">
+          <img class="app-mark-small" src="/static/app-icon.svg" alt="">
+          <div>
+            <div class="sheet-title">Change Admin Password</div>
+            <div class="sheet-subtitle">All admin sessions will be signed out.</div>
+          </div>
+          <button class="sheet-close" type="button" data-action="admin-password-cancel"
+                  title="Close">×</button>
+        </div>
+        <div class="sheet-body">
+          <label class="field">
+            <span class="field-label" for="setup-new-password">New password</span>
+            <input id="setup-new-password" class="text-input" type="password"
+                   autocomplete="new-password" spellcheck="false"
+                   aria-label="New admin password">
+          </label>
+          <label class="field">
+            <span class="field-label" for="setup-confirm-password">Confirm new password</span>
+            <input id="setup-confirm-password" class="text-input" type="password"
+                   autocomplete="new-password" spellcheck="false"
+                   aria-label="Confirm new admin password">
+          </label>
+          <div id="admin-password-error" class="field-help setup-error"></div>
+          <div class="sheet-actions">
+            <button class="secondary-button" type="button"
+                    data-action="admin-password-cancel">Cancel</button>
+            <button class="primary-button" type="button"
+                    data-action="admin-password-save">Change Password</button>
+          </div>
+        </div>
+      </div>`;
+    el.modalRoot.classList.remove("hidden");
+    const input = $("#setup-new-password", el.modalRoot);
+    if (input) {
+      input.focus();
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          changeAdminPassword();
+        }
+      });
+    }
+  }
+
   async function changeAdminPassword() {
     if (!state.adminAuthenticated) {
-      state.setupError = "Log in to change settings.";
+      state.setupError = "Log in to change the admin password.";
+      state.modalMode = "setup";
       renderSetup();
       return;
     }
     const newInput = $("#setup-new-password", el.modalRoot);
     const confirmInput = $("#setup-confirm-password", el.modalRoot);
-    const note = $("#setup-settings-error", el.modalRoot);
+    const note = $("#admin-password-error", el.modalRoot);
     const password = newInput ? newInput.value : "";
     if (!password) {
       if (note) note.textContent = "Enter a new password.";
@@ -4763,7 +4802,7 @@
       return;
     }
     if (note) note.textContent = "";
-    const button = $('[data-action="setup-change-password"]', el.modalRoot);
+    const button = $('[data-action="admin-password-save"]', el.modalRoot);
     if (button) {
       button.disabled = true;
       button.textContent = "Changing…";
@@ -4776,6 +4815,10 @@
       });
       setAdminToken("");
       state.adminAuthenticated = false;
+      state.setupStats = null;
+      state.statsError = "";
+      state.modalMode = "setup";
+      stopSetupStatsPoll();
       if (state.setupInfo) state.setupInfo.authenticated = false;
       state.setupError = "";
       renderSetup();
@@ -4788,7 +4831,10 @@
       if (error.status === 401) {
         setAdminToken("");
         state.adminAuthenticated = false;
+        state.setupStats = null;
+        state.modalMode = "setup";
         state.setupError = "Session expired. Enter the admin password again.";
+        stopSetupStatsPoll();
         renderSetup();
         return;
       }
@@ -6040,7 +6086,12 @@
       } else if (action === "setup-save-settings") {
         saveSetupSettings();
       } else if (action === "setup-change-password") {
+        openChangePasswordDialog();
+      } else if (action === "admin-password-save") {
         changeAdminPassword();
+      } else if (action === "admin-password-cancel") {
+        state.modalMode = "setup";
+        renderSetup();
       } else if (action === "setup-back") {
         openSetupModal();
       } else if (action === "rekey-reload") {

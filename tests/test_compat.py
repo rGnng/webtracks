@@ -552,6 +552,9 @@ class ApiTests(unittest.TestCase):
             "/api/setup/login", json={"password": "1"}
         ).get_json()["token"]
         headers = {"Authorization": "Bearer " + token}
+        self.client.post(
+            "/api/status", json={"client": "stats-client"}
+        )
         self.client.post("/api/songs/%s/played" % self.song_id)
         stats = self.client.get(
             "/api/setup/stats", headers=headers
@@ -560,7 +563,12 @@ class ApiTests(unittest.TestCase):
         self.assertGreaterEqual(stats["totals"]["uniqueSongs"], 1)
         self.assertGreaterEqual(stats["totals"]["adminLogins"], 1)
         self.assertGreaterEqual(stats["totals"]["visitors"], 1)
+        self.assertGreaterEqual(stats["totals"]["online"], 1)
         self.assertTrue(stats["clients"])
+        self.assertTrue(any(
+            client.get("online", 0) >= 1
+            for client in stats["clients"]
+        ))
 
     def test_star_and_playlist(self):
         response = self.client.post(

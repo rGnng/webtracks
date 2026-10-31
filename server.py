@@ -182,20 +182,37 @@ class PresenceTracker:
         self._clients = {}
         self._lock = threading.Lock()
 
-    def touch(self, client_id=None):
+    def _prune(self, now):
+        self._clients = {
+            key: client for key, client in self._clients.items()
+            if now - client["seen"] <= self.ttl
+        }
+
+    def touch(self, client_id=None, address=""):
         now = time.time()
         with self._lock:
-            self._clients = {
-                key: seen for key, seen in self._clients.items()
-                if now - seen <= self.ttl
-            }
+            self._prune(now)
             client_id = str(client_id or "").strip()[:128]
             if client_id:
-                self._clients[client_id] = now
+                self._clients[client_id] = {
+                    "seen": now,
+                    "ip": str(address or ""),
+                }
             return len(self._clients)
 
     def count(self):
         return self.touch(None)
+
+    def counts_by_ip(self):
+        now = time.time()
+        with self._lock:
+            self._prune(now)
+            counts = {}
+            for client in self._clients.values():
+                address = client.get("ip") or ""
+                if address:
+                    counts[address] = counts.get(address, 0) + 1
+            return counts
 
 
 class AdminAuth:
@@ -1242,7 +1259,12 @@ def create_app(config):
         unauthorized = _require_admin()
         if unauthorized is not None:
             return unauthorized
-        return _json_response(analytics.snapshot())
+        snapshot = analytics.snapshot()
+        online_by_ip = presence.counts_by_ip()
+        for client in snapshot["clients"]:
+            client["online"] = online_by_ip.get(client["ip"], 0)
+        snapshot["totals"]["online"] = sum(online_by_ip.values())
+        return _json_response(snapshot)
 
     @app.patch("/api/setup/library")
     def api_setup_library():
@@ -1574,7 +1596,7 @@ def create_app(config):
     @app.post("/api/status")
     def api_status():
         body = request.get_json(silent=True) or {}
-        online = presence.touch(body.get("client"))
+        online = presence.touch(body.get("client"), _client_ip())
         scan = scans.snapshot()
         rekey = rekeys.snapshot()
         artwork = artworks.snapshot()
