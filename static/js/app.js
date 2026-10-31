@@ -883,7 +883,7 @@
     const max = Math.max(0, Number(cache.maxBytes) || 0);
     const used = Math.max(0, Number(cache.usedBytes) || 0);
     const entries = Math.max(0, Number(cache.entries) || 0);
-    const trackLabel = entries === 1 ? "track" : "tracks";
+    const itemLabel = entries === 1 ? "item" : "items";
     if (max === 0) {
       el.statusCache.textContent = "Cache off";
       el.statusCache.title =
@@ -891,17 +891,17 @@
       return;
     }
     el.statusCache.textContent =
-      `Server Cache ${fmtCacheSize(used)} / ${fmtCacheSize(max)} · ${entries} ${trackLabel}`;
+      `Server Cache ${fmtCacheSize(used)} / ${fmtCacheSize(max)} · ${entries} ${itemLabel}`;
     const breakdown = (cache.qualities || [])
       .filter((quality) => Number(quality.entries) > 0)
       .map((quality) => {
         const count = Number(quality.entries) || 0;
         return `${quality.label} · ${quality.detail}: `
-          + `${fmtCacheSize(quality.usedBytes)}, ${count} ${count === 1 ? "track" : "tracks"}`;
+          + `${fmtCacheSize(quality.usedBytes)}, ${count} ${count === 1 ? "item" : "items"}`;
       });
     el.statusCache.title =
       `Transcode cache (memory): ${fmtCacheSize(used)} of ${fmtCacheSize(max)} used, `
-      + `${entries} ${trackLabel}`;
+      + `${entries} ${itemLabel}`;
     if (breakdown.length) {
       el.statusCache.title += `\n${breakdown.join("\n")}`;
     }
