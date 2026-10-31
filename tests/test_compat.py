@@ -26,6 +26,7 @@ from tracks_config import (  # noqa: E402
     load_settings,
     update_config,
 )
+from tracks_analytics import Analytics  # noqa: E402
 from tracks_logging import _compress_archive, configure_logging  # noqa: E402
 from tracks_rate_limit import DownloadRateLimiter  # noqa: E402
 from tracks_db import LibraryDB, LibraryCatalog  # noqa: E402
@@ -542,6 +543,24 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(info["limited"])
         self.assertEqual(info["retryAfter"], 6)
         self.assertEqual(info["limit"], 28)
+
+    def test_setup_stats_require_admin_and_track_plays(self):
+        self.assertEqual(
+            self.client.get("/api/setup/stats").status_code, 401
+        )
+        token = self.client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+        self.client.post("/api/songs/%s/played" % self.song_id)
+        stats = self.client.get(
+            "/api/setup/stats", headers=headers
+        ).get_json()
+        self.assertGreaterEqual(stats["totals"]["songsPlayed"], 1)
+        self.assertGreaterEqual(stats["totals"]["uniqueSongs"], 1)
+        self.assertGreaterEqual(stats["totals"]["adminLogins"], 1)
+        self.assertGreaterEqual(stats["totals"]["visitors"], 1)
+        self.assertTrue(stats["clients"])
 
     def test_star_and_playlist(self):
         response = self.client.post(
@@ -1144,6 +1163,56 @@ class LoggingTests(unittest.TestCase):
                 )
             finally:
                 self._close_loggers((runtime, operations))
+
+
+class AnalyticsTests(unittest.TestCase):
+    def test_in_memory_traffic_and_operation_totals(self):
+        clock = [1000.0]
+        analytics = Analytics(clock=lambda: clock[0])
+        analytics.record_request(
+            "192.0.2.1", "/api/audio/song-a", 200, 1200, "Browser"
+        )
+        analytics.record_request(
+            "192.0.2.1", "/api/artwork/album-a", 200, 300, "Browser"
+        )
+        analytics.record_request(
+            "192.0.2.1", "/api/status", 200, 999, "Browser"
+        )
+        analytics.record_play("192.0.2.1", "song-a")
+        analytics.record_play("192.0.2.1", "song-a")
+        analytics.record_operation(
+            "192.0.2.1", "playlist_songs_added", "success"
+        )
+        analytics.record_operation(
+            "192.0.2.1", "admin_login", "success"
+        )
+        analytics.record_operation(
+            "192.0.2.2", "download_rate_limited", "blocked"
+        )
+        clock[0] = 1005.0
+        snapshot = analytics.snapshot()
+        totals = snapshot["totals"]
+        self.assertEqual(totals["visitors"], 2)
+        self.assertEqual(totals["requests"], 2)
+        self.assertEqual(totals["bytesSent"], 1500)
+        self.assertEqual(totals["audioBytes"], 1200)
+        self.assertEqual(totals["artworkBytes"], 300)
+        self.assertEqual(totals["songsPlayed"], 2)
+        self.assertEqual(totals["uniqueSongs"], 1)
+        self.assertEqual(totals["playlistActions"], 1)
+        self.assertEqual(totals["adminLogins"], 1)
+        self.assertEqual(totals["rateLimited"], 1)
+        self.assertEqual(snapshot["uptimeSeconds"], 5)
+        self.assertEqual(snapshot["clientCount"], 2)
+        first = next(
+            client for client in snapshot["clients"]
+            if client["ip"] == "192.0.2.1"
+        )
+        self.assertEqual(first["requests"], 2)
+        self.assertEqual(first["bytesSent"], 1500)
+        self.assertEqual(first["songsPlayed"], 2)
+        self.assertEqual(first["uniqueSongs"], 1)
+        self.assertEqual(first["playlistActions"], 1)
 
 
 class RateLimitTests(unittest.TestCase):

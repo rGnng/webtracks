@@ -85,6 +85,10 @@
     rekeyTimer: null,
     artworkJob: null,
     artworkTimer: null,
+    setupStats: null,
+    statsError: "",
+    statsTimer: null,
+    statsInFlight: false,
     modalMode: null,
     confirmCallback: null,
     browserListVirtual: null,
@@ -4103,6 +4107,7 @@
 
   function closeModal() {
     state.setupOpen = false;
+    stopSetupStatsPoll();
     state.modalMode = null;
     state.confirmCallback = null;
     state.playlistDialog = null;
@@ -4234,6 +4239,129 @@
       </div>`).join("")}</div>`;
   }
 
+  function fmtStatsTime(value, full = false) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value || "";
+    return full
+      ? date.toLocaleString()
+      : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function setupStatsHtml() {
+    const stats = state.setupStats;
+    if (!stats) {
+      return `<div class="field-help">${state.statsError
+        ? esc(state.statsError) : "Loading usage statistics…"}</div>`;
+    }
+    const totals = stats.totals || {};
+    const cards = [
+      ["Visitors", Number(totals.visitors || 0).toLocaleString()],
+      ["Requests", Number(totals.requests || 0).toLocaleString()],
+      ["Transferred", fmtCacheSize(totals.bytesSent)],
+      ["Songs played", Number(totals.songsPlayed || 0).toLocaleString()],
+      ["Unique songs", Number(totals.uniqueSongs || 0).toLocaleString()],
+      ["Playlist actions", Number(totals.playlistActions || 0).toLocaleString()],
+    ];
+    const actions = [
+      ["Logins", totals.adminLogins],
+      ["Scans", totals.scans],
+      ["ReKeys", totals.rekeys],
+      ["Artwork rebuilds", totals.artworkRebuilds],
+      ["Settings changes", totals.settingsChanges],
+      ["Rate limited", totals.rateLimited],
+    ].map(([label, value]) => `
+      <span><strong>${Number(value || 0).toLocaleString()}</strong> ${esc(label)}</span>`
+    ).join("");
+    const clients = stats.clients || [];
+    const rows = clients.map((client) => `
+      <tr title="First seen ${esc(fmtStatsTime(client.firstSeen, true))} · ${esc(client.userAgent || "")}">
+        <td class="setup-stat-ip">${esc(client.ip || "")}</td>
+        <td>${esc(fmtStatsTime(client.lastSeen))}</td>
+        <td class="num">${Number(client.requests || 0).toLocaleString()}</td>
+        <td class="num">${fmtCacheSize(client.bytesSent)}</td>
+        <td class="num">${Number(client.songsPlayed || 0).toLocaleString()}</td>
+        <td class="num">${Number(client.playlistActions || 0).toLocaleString()}</td>
+      </tr>`).join("");
+    const clientHtml = clients.length
+      ? `<div class="setup-stats-table-wrap">
+           <table class="setup-stats-table">
+             <thead><tr>
+               <th>Client</th><th>Last</th><th class="num">Req</th>
+               <th class="num">Data</th><th class="num">Songs</th>
+               <th class="num">Playlists</th>
+             </tr></thead>
+             <tbody>${rows}</tbody>
+           </table>
+         </div>
+         ${Number(stats.clientCount || 0) > clients.length
+           ? `<div class="field-help">Showing ${clients.length} of ${Number(stats.clientCount).toLocaleString()} clients</div>`
+           : ""}`
+      : `<div class="field-help">No traffic recorded yet.</div>`;
+    return `
+      <div class="setup-stats-head">
+        <div class="field-label">Usage statistics</div>
+        <div class="field-help">Since ${esc(fmtStatsTime(stats.since, true))} · in memory only</div>
+      </div>
+      <div class="setup-stats-grid">
+        ${cards.map(([label, value]) => `
+          <div class="setup-stat">
+            <span class="setup-stat-value">${esc(value)}</span>
+            <span class="setup-stat-label">${esc(label)}</span>
+          </div>`).join("")}
+      </div>
+      <div class="setup-stats-actions">${actions}</div>
+      ${clientHtml}`;
+  }
+
+  function updateSetupStatsView() {
+    const node = $("#setup-stats", el.modalRoot);
+    if (node) node.innerHTML = setupStatsHtml();
+  }
+
+  function scheduleSetupStatsPoll() {
+    if (state.statsTimer) clearTimeout(state.statsTimer);
+    state.statsTimer = null;
+    if (state.adminAuthenticated && state.setupOpen
+        && state.modalMode === "setup") {
+      state.statsTimer = setTimeout(refreshSetupStats, 5000);
+    }
+  }
+
+  function stopSetupStatsPoll() {
+    if (state.statsTimer) clearTimeout(state.statsTimer);
+    state.statsTimer = null;
+  }
+
+  async function refreshSetupStats() {
+    if (!state.adminAuthenticated || !state.setupOpen
+        || state.modalMode !== "setup" || state.statsInFlight) {
+      return;
+    }
+    state.statsInFlight = true;
+    try {
+      const stats = await api("/api/setup/stats", {
+        headers: adminHeaders(),
+      });
+      state.setupStats = stats;
+      state.statsError = "";
+    } catch (error) {
+      if (error.status === 401) {
+        setAdminToken("");
+        state.adminAuthenticated = false;
+        state.setupStats = null;
+        state.setupError = "Session expired. Enter the admin password again.";
+        stopSetupStatsPoll();
+        renderSetup();
+        return;
+      }
+      state.statsError = error.message;
+    } finally {
+      state.statsInFlight = false;
+    }
+    updateSetupStatsView();
+    scheduleSetupStatsPoll();
+  }
+
   function setupStatusHtml() {
     const scan = state.scanJob;
     const rekey = state.rekeyJob;
@@ -4354,7 +4482,6 @@
             Save Settings
           </button>
         </div>
-        ${passwordHtml}
         <div id="setup-settings-error" class="field-help setup-error"></div>
       </div>`;
     const authHtml = state.adminAuthenticated
@@ -4373,6 +4500,17 @@
          </div>`;
     const errorHtml = state.setupError
       ? `<div class="field-help setup-error">${esc(state.setupError)}</div>` : "";
+    const statsHtml = state.adminAuthenticated
+      ? `<div id="setup-stats" class="setup-stats">${setupStatsHtml()}</div>`
+      : "";
+    const adminHtml = `
+      <div class="setup-section setup-admin-section">
+        <div class="field-label">Admin</div>
+        ${authHtml}
+        ${errorHtml}
+        ${passwordHtml}
+        ${statsHtml}
+      </div>`;
     el.modalRoot.innerHTML = `
       <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Setup">
         <div class="sheet-header">
@@ -4411,11 +4549,8 @@
             </div>
             ${setupStatusHtml()}
           </div>
-          <div class="setup-section">
-            ${authHtml}
-            ${errorHtml}
-          </div>
           ${settingsHtml}
+          ${adminHtml}
           <div class="sheet-actions">
             <button class="secondary-button" type="button" data-action="close-modal">Close</button>
           </div>
@@ -4435,6 +4570,11 @@
           loginAdmin();
         }
       });
+    }
+    if (state.adminAuthenticated) {
+      refreshSetupStats();
+    } else {
+      stopSetupStatsPoll();
     }
   }
 
@@ -4702,6 +4842,9 @@
     setAdminToken("");
     state.adminAuthenticated = false;
     state.setupError = "";
+    state.setupStats = null;
+    state.statsError = "";
+    stopSetupStatsPoll();
     if (state.setupInfo) state.setupInfo.authenticated = false;
     renderSetup();
     if (state.section === "playlists" && !state.albumDetail) renderContent();

@@ -25,8 +25,11 @@ import sys
 import threading
 import time
 
-from flask import Flask, Response, request, send_file, send_from_directory
+from flask import (
+    Flask, Response, current_app, request, send_file, send_from_directory,
+)
 
+from tracks_analytics import Analytics
 from tracks_transcode import (
     DEFAULT_CACHE_MB,
     DEFAULT_QUALITY,
@@ -734,6 +737,10 @@ def _client_ip():
 
 
 def _log_operation(action, result="ok", **details):
+    client_ip = _client_ip()
+    analytics = current_app.extensions.get("tracks_analytics")
+    if analytics is not None:
+        analytics.record_operation(client_ip, action, result)
     if not operation_log.handlers:
         return
     forwarded = (request.headers.get("X-Forwarded-For") or "").strip()
@@ -744,7 +751,7 @@ def _log_operation(action, result="ok", **details):
         "action": action,
         "result": result,
         # remoteIp is the real client as seen through the reverse proxy.
-        "remoteIp": _client_ip(),
+        "remoteIp": client_ip,
         # proxyIp is the direct socket peer (usually the reverse proxy).
         "proxyIp": request.remote_addr or "",
         "forwardedFor": forwarded,
@@ -845,6 +852,7 @@ def create_app(config):
     scans = ScanManager(config, catalog)
     rekeys = RekeyManager(config, catalog)
     artworks = ArtworkManager(config, catalog)
+    analytics = Analytics()
     admin_auth = AdminAuth(config.admin_password_sha1)
     presence = PresenceTracker()
     transcode_cache = TranscodeCache(
@@ -856,6 +864,7 @@ def create_app(config):
     app.extensions["tracks_scans"] = scans
     app.extensions["tracks_rekeys"] = rekeys
     app.extensions["tracks_artworks"] = artworks
+    app.extensions["tracks_analytics"] = analytics
     app.extensions["tracks_admin_auth"] = admin_auth
     app.extensions["tracks_presence"] = presence
     app.extensions["tracks_transcode_cache"] = transcode_cache
@@ -888,6 +897,19 @@ def create_app(config):
                 "HTTP %s %s -> %s", request.method, request.path,
                 response.status_code,
             )
+        size = response.content_length
+        if size is None and not response.direct_passthrough:
+            try:
+                size = response.calculate_content_length()
+            except Exception:
+                size = None
+        analytics.record_request(
+            _client_ip(),
+            request.path,
+            response.status_code,
+            size or 0,
+            request.headers.get("User-Agent") or "",
+        )
         return response
 
     @app.get("/")
@@ -1076,6 +1098,7 @@ def create_app(config):
     def api_played(song_id):
         try:
             plays = catalog.record_play(song_id)
+            analytics.record_play(_client_ip(), song_id)
             return _json_response({"id": song_id, "plays": plays})
         except ReadOnlyError as exc:
             return _error(str(exc), 403)
@@ -1213,6 +1236,13 @@ def create_app(config):
             "rekey": rekeys.snapshot(),
             "artworkJob": artworks.snapshot(),
         })
+
+    @app.get("/api/setup/stats")
+    def api_setup_stats():
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
+        return _json_response(analytics.snapshot())
 
     @app.patch("/api/setup/library")
     def api_setup_library():
