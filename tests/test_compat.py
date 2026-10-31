@@ -183,6 +183,8 @@ class DatabaseTests(unittest.TestCase):
         boot = catalog.bootstrap_payload()
         self.assertEqual(boot["libraryStats"]["songCount"], 1)
         self.assertEqual(len(boot["albums"]), 1)
+        for key in ("comments", "lastPlayed", "skipCount"):
+            self.assertNotIn(key, catalog.all_songs[0])
         playlist = catalog.create_playlist("Test Playlist")
         catalog.add_to_playlist(
             playlist["id"], [catalog.all_songs[0]["id"]]

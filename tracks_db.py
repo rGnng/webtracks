@@ -1201,9 +1201,9 @@ class LibraryCatalog:
     def _load_songs(self, conn):
         rows = conn.execute(
             "SELECT s.id, s.path, s.title, s.genre, s.year, s.track,"
-            "       s.track_total, s.disc, s.disc_total, s.comments,"
+            "       s.track_total, s.disc, s.disc_total,"
             "       s.duration, s.date_added, s.play_count, s.rating,"
-            "       s.loved, s.last_played, s.skip_count, s.mtime,"
+            "       s.loved, s.mtime,"
             "       s.file_size, s.album_id,"
             "       al.title AS album_title, al.genre AS album_genre,"
             "       al.year AS album_year, ar.name AS album_artist,"
@@ -1253,17 +1253,11 @@ class LibraryCatalog:
                 "trackTotal": int(row["track_total"] or 0),
                 "disc": int(row["disc"] or 0),
                 "discTotal": int(row["disc_total"] or 0),
-                "comments": row["comments"] or "",
                 "duration": float(row["duration"] or 0),
                 "dateAdded": float(row["date_added"] or 0),
                 "plays": int(row["play_count"] or 0),
                 "rating": int(row["rating"] or 0),
                 "loved": bool(row["loved"]),
-                "lastPlayed": (
-                    float(row["last_played"])
-                    if row["last_played"] is not None else None
-                ),
-                "skipCount": int(row["skip_count"] or 0),
                 "mtime": float(row["mtime"] or 0),
                 "fileSize": int(row["file_size"] or 0),
                 "_path": row["path"],
@@ -1341,10 +1335,8 @@ class LibraryCatalog:
     @staticmethod
     def public_song(song):
         return {
-            key: value
-            for key, value in song.items()
+            key: value for key, value in song.items()
             if not key.startswith("_")
-            and key not in ("comments", "lastPlayed", "skipCount")
         }
 
     @staticmethod
