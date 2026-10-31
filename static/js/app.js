@@ -10,6 +10,9 @@
   const HISTORY_LIMIT = 50;
   const MAX_PERSIST_QUEUE = 2500;
   const DEFAULT_ALBUM_PAGE_CAPACITY = 60;
+  const ALBUM_GRID_PADDING_TOP = 16;
+  const ALBUM_GRID_PADDING_BOTTOM = 34;
+  const ALBUM_GRID_OVERSCAN_ROWS = 2;
 
   const ALBUM_SORT_KEYS = ["recentlyAdded", "album", "artist", "year"];
   const SECTIONS = [
@@ -42,6 +45,7 @@
     albumDetail: null,
     albumPage: 1,
     albumPageMetrics: null,
+    albumVirtual: null,
     albumReturnScroll: 0,
     selectedAlbums: new Set(),
     albumAnchor: null,
@@ -380,6 +384,7 @@
 
   function setContent(html) {
     state.songVirtual = null;
+    state.albumVirtual = null;
     el.content.innerHTML = html;
   }
 
@@ -1575,8 +1580,8 @@
     const columns = (style.gridTemplateColumns || "")
       .split(" ").filter(Boolean).length;
     const rowGap = parseFloat(style.rowGap) || 0;
-    const paddingTop = parseFloat(style.paddingTop) || 0;
-    const paddingBottom = parseFloat(style.paddingBottom) || 0;
+    const paddingTop = ALBUM_GRID_PADDING_TOP;
+    const paddingBottom = ALBUM_GRID_PADDING_BOTTOM;
     const cardHeight = card.getBoundingClientRect().height;
     if (!columns || !cardHeight) return null;
     const available = scroller.clientHeight - paddingTop - paddingBottom;
@@ -1673,6 +1678,7 @@
         || (state.section !== "albums" && state.section !== "recent")) {
       return;
     }
+    if (state.albumVirtual) state.albumVirtual.refresh();
     const metrics = measureAlbumPageMetrics();
     if (metrics) state.albumPageMetrics = metrics;
     updateAlbumPagerFromScroll();
@@ -1724,32 +1730,11 @@
         ${icon("chevron-down")}
       </button>`;
 
-    const cards = albums.map((album) => {
-      const selected = state.selectedAlbums.has(album.id);
-      return `
-        <article class="album-card${selected ? " selected" : ""}"
-                 data-album-id="${esc(album.id)}"
-                 data-action="album-card"
-                 tabindex="-1"
-                 aria-selected="${selected ? "true" : "false"}">
-          <div class="album-art-wrap" draggable="true">
-            <img src="${artURL(album.id)}" alt="${esc(album.title)}"
-                 loading="lazy" decoding="async" draggable="false">
-            <button class="album-play" type="button" data-action="play-album"
-                    data-album-id="${esc(album.id)}" title="Play ${esc(album.title)}"
-                    aria-label="Play ${esc(album.title)}">
-              ${icon("play")}
-            </button>
-          </div>
-          <div class="album-meta">
-            <div class="album-title" title="${esc(album.title)}">${esc(album.title)}</div>
-            <div class="album-artist" title="${esc(album.artist)}">${esc(album.artist)}</div>
-          </div>
-        </article>`;
-    }).join("");
-
     const body = albums.length
-      ? `<div class="album-grid">${cards}</div>`
+      ? `<div class="album-grid-virtual">
+           <div id="album-grid-spacer" class="album-grid-spacer"></div>
+           <div id="album-grid-window" class="album-grid album-grid-window"></div>
+         </div>`
       : `<div class="center-state"><div class="state-note">${state.query ? "No Results" : "No Albums"}</div></div>`;
 
     setContent(`
@@ -1802,11 +1787,152 @@
         }
       });
     }
+    state.albumVirtual = setupAlbumVirtual(albums);
     updateStatus();
     window.requestAnimationFrame(() => {
+      if (state.albumVirtual) state.albumVirtual.refresh();
       state.albumPageMetrics = measureAlbumPageMetrics();
       updateAlbumPagerFromScroll(1);
     });
+  }
+
+  function albumCardHtml(album) {
+    const selected = state.selectedAlbums.has(album.id);
+    return `
+      <article class="album-card${selected ? " selected" : ""}"
+               data-album-id="${esc(album.id)}"
+               data-action="album-card"
+               tabindex="-1"
+               aria-selected="${selected ? "true" : "false"}">
+        <div class="album-art-wrap" draggable="true">
+          <img src="${artURL(album.id)}" alt="${esc(album.title)}"
+               loading="lazy" decoding="async" draggable="false">
+          <button class="album-play" type="button" data-action="play-album"
+                  data-album-id="${esc(album.id)}" title="Play ${esc(album.title)}"
+                  aria-label="Play ${esc(album.title)}">
+            ${icon("play")}
+          </button>
+        </div>
+        <div class="album-meta">
+          <div class="album-title" title="${esc(album.title)}">${esc(album.title)}</div>
+          <div class="album-artist" title="${esc(album.artist)}">${esc(album.artist)}</div>
+        </div>
+      </article>`;
+  }
+
+  function setupAlbumVirtual(albums) {
+    const scroller = $("#grid-scroll", el.content);
+    const gridWindow = $("#album-grid-window", el.content);
+    const spacer = $("#album-grid-spacer", el.content);
+    if (!scroller || !gridWindow || !spacer || !albums.length) return null;
+
+    let metrics = null;
+    let firstRow = -1;
+    let lastRow = -1;
+
+    const renderRange = (start, end) => {
+      const rows = [];
+      for (let index = start; index < end; index += 1) {
+        rows.push(albumCardHtml(albums[index]));
+      }
+      gridWindow.innerHTML = rows.join("");
+    };
+
+    const measure = () => {
+      const style = getComputedStyle(gridWindow);
+      const columns = (style.gridTemplateColumns || "")
+        .split(" ").filter(Boolean).length;
+      const rowGap = parseFloat(style.rowGap) || 0;
+      const card = gridWindow.querySelector(".album-card");
+      const cardHeight = card ? card.getBoundingClientRect().height : 0;
+      if (!columns || !cardHeight) return null;
+      const rowStride = cardHeight + rowGap;
+      const rowCount = Math.max(1, Math.ceil(albums.length / columns));
+      return {
+        columns,
+        rowGap,
+        cardHeight,
+        rowStride,
+        rowCount,
+        totalHeight: ALBUM_GRID_PADDING_TOP
+          + rowCount * cardHeight
+          + Math.max(0, rowCount - 1) * rowGap
+          + ALBUM_GRID_PADDING_BOTTOM,
+      };
+    };
+
+    const update = (force = false) => {
+      if (!metrics) return;
+      const scrollTop = scroller.scrollTop;
+      const viewHeight = scroller.clientHeight || 1;
+      const first = Math.max(
+        0,
+        Math.floor(
+          (scrollTop - ALBUM_GRID_PADDING_TOP) / metrics.rowStride
+        ) - ALBUM_GRID_OVERSCAN_ROWS,
+      );
+      const last = Math.min(
+        metrics.rowCount,
+        Math.ceil(
+          (scrollTop + viewHeight - ALBUM_GRID_PADDING_TOP)
+          / metrics.rowStride
+        ) + ALBUM_GRID_OVERSCAN_ROWS,
+      );
+      const safeLast = Math.min(
+        metrics.rowCount, Math.max(first + 1, last)
+      );
+      if (!force && first === firstRow && safeLast === lastRow) return;
+      firstRow = first;
+      lastRow = safeLast;
+      renderRange(
+        first * metrics.columns,
+        Math.min(albums.length, safeLast * metrics.columns),
+      );
+      gridWindow.style.top = `${
+        ALBUM_GRID_PADDING_TOP + first * metrics.rowStride
+      }px`;
+    };
+
+    const refresh = () => {
+      if (!gridWindow.querySelector(".album-card")) {
+        renderRange(0, Math.min(albums.length, 120));
+      }
+      const next = measure();
+      if (!next) return;
+      metrics = next;
+      spacer.style.height = `${metrics.totalHeight}px`;
+      firstRow = -1;
+      lastRow = -1;
+      update(true);
+    };
+
+    const scrollToIndex = (index) => {
+      if (!metrics) return;
+      const row = Math.floor(index / metrics.columns);
+      const top = ALBUM_GRID_PADDING_TOP + row * metrics.rowStride;
+      const bottom = top + metrics.cardHeight;
+      const viewTop = scroller.scrollTop;
+      const viewBottom = viewTop + scroller.clientHeight;
+      if (top < viewTop + 4) {
+        scroller.scrollTop = Math.max(0, top - 4);
+      } else if (bottom > viewBottom - 4) {
+        scroller.scrollTop = Math.min(
+          scroller.scrollHeight - scroller.clientHeight,
+          bottom - scroller.clientHeight + 4,
+        );
+      }
+      update(true);
+    };
+
+    renderRange(0, Math.min(albums.length, 120));
+    refresh();
+    scroller.addEventListener("scroll", () => update(), { passive: true });
+    return {
+      metrics: () => metrics,
+      render: () => update(),
+      refresh,
+      scrollToIndex,
+    };
   }
 
   function albumSortLabel(value) {
@@ -5181,6 +5307,7 @@
     const album = list[index];
     state.selectedAlbums = new Set([album.id]);
     state.albumAnchor = album.id;
+    if (state.albumVirtual) state.albumVirtual.scrollToIndex(index);
     updateAlbumCardSelection();
     const card = document.querySelector(`.album-card[data-album-id="${album.id}"]`);
     if (card) card.scrollIntoView({ block: "nearest" });

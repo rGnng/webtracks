@@ -25,11 +25,11 @@ queue overlay, and a 24pt status bar.
   separates the Ascending / Descending choice with a divider at the bottom.
   The default comes from `album_sort` and `album_sort_descending` in
   `config.yaml`, currently recently added, descending.
-- The album grid loads every album at once and scrolls vertically, using native
-  lazy loading for artwork. Paging is virtual: the page count is derived from the
-  current column count and visible row count, and first / previous / next / last
-  (arrow buttons) or a page number scrolls to that page. Searches and sorts
-  return to page 1.
+- The album grid is virtualized: only visible rows are kept in the DOM, with
+  native lazy loading for artwork, so large libraries scroll smoothly in Safari.
+  Paging is virtual: the page count is derived from the current column count and
+  visible row count, and first / previous / next / last (arrow buttons) or a page
+  number scrolls to that page. Searches and sorts return to page 1.
 - Built-in **Stared** playlist (backed by `songs.loved`) and user playlists.
 - Song stars and play counts are written to the project's own Tracks-compatible
   database.
