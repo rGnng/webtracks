@@ -99,6 +99,7 @@
     shuffle: false,
     repeat: "off",
     pendingRecord: false,
+    buffering: false,
     loadedSongId: null,
     pendingSeek: null,
     pendingPlay: false,
@@ -120,7 +121,7 @@
       "status-online", "status-online-count", "setup-button",
       "prev-button", "play-button", "play-icon",
       "next-button", "quality-button", "lcd", "lcd-idle", "lcd-playing",
-      "lcd-art", "lcd-art-wrap", "lcd-title", "lcd-subtitle",
+      "lcd-art", "lcd-art-wrap", "lcd-loading", "lcd-title", "lcd-subtitle",
       "lcd-shuffle", "lcd-star", "lcd-repeat", "lcd-elapsed",
       "lcd-duration", "lcd-seek", "lcd-seek-fill", "lcd-title-button",
       "queue-button", "queue-popover", "queue-list", "queue-clear",
@@ -956,6 +957,7 @@
     audio.src = audioURL(song);
     audio.volume = 1;
     audio.load();
+    setAudioBuffering(true);
     if (wasPlaying) {
       const promise = audio.play();
       if (promise && promise.catch) {
@@ -3036,6 +3038,7 @@
     audio.volume = 1;
     audio.src = audioURL(song);
     audio.load();
+    setAudioBuffering(true);
     // Start inside the originating click when possible. Safari can reject an
     // asynchronous play() call from loadedmetadata if it was not user-driven.
     const initialPlay = audio.play();
@@ -3062,6 +3065,7 @@
     audio.src = audioURL(song);
     audio.volume = 1;
     audio.load();
+    setAudioBuffering(true);
     const initialPlay = audio.play();
     if (initialPlay && initialPlay.catch) {
       initialPlay.catch(() => {});
@@ -3086,6 +3090,7 @@
       player.pendingPlay = false;
       player.pendingRecord = false;
       audio.pause();
+      setAudioBuffering(false);
       renderPlayerUI();
       refreshCurrentIndicators();
       updateStatus();
@@ -3101,6 +3106,7 @@
       audio.src = audioURL(song);
       audio.volume = 1;
       audio.load();
+      setAudioBuffering(true);
       const initialPlay = audio.play();
       if (initialPlay && initialPlay.catch) {
         initialPlay.catch(() => {});
@@ -3335,6 +3341,7 @@
     el.lcdShuffle.title = player.shuffle ? "Shuffle On" : "Shuffle Off";
 
     if (!song) {
+      setAudioBuffering(false);
       el.lcd.classList.add("idle");
       el.lcdPlaying.classList.add("hidden");
       el.lcdIdle.classList.remove("hidden");
@@ -5005,6 +5012,15 @@
   // ---------------------------------------------------------------------
   // Audio element and progress controls
 
+  function setAudioBuffering(value) {
+    const active = Boolean(value && currentSong());
+    if (player.buffering === active) return;
+    player.buffering = active;
+    if (el.lcdLoading) {
+      el.lcdLoading.classList.toggle("hidden", !active);
+    }
+  }
+
   function handleLoadedMetadata() {
     const song = currentSong();
     if (!song) return;
@@ -5039,6 +5055,7 @@
   }
 
   function handleAudioPlaying() {
+    setAudioBuffering(false);
     player.playing = true;
     const song = currentSong();
     if (song && player.pendingRecord === song.id) {
@@ -5064,6 +5081,7 @@
   }
 
   function handleAudioEnded() {
+    setAudioBuffering(false);
     if (player.repeat === "one") {
       player.elapsed = 0;
       player.pendingRecord = false;
@@ -5085,6 +5103,7 @@
   function handleAudioError() {
     if (!audio.src) return;
     const song = currentSong();
+    setAudioBuffering(false);
     player.playing = false;
     player.pendingPlay = false;
     player.pendingRecord = false;
@@ -5645,10 +5664,19 @@
 
   function bindAudioEvents() {
     audio.addEventListener("loadedmetadata", handleLoadedMetadata);
-    audio.addEventListener("loadeddata", () => refreshCacheStatus(true));
+    audio.addEventListener("loadeddata", () => {
+      setAudioBuffering(false);
+      refreshCacheStatus(true);
+    });
+    audio.addEventListener("canplay", () => setAudioBuffering(false));
+    audio.addEventListener("waiting", () => setAudioBuffering(true));
+    audio.addEventListener("stalled", () => setAudioBuffering(true));
     audio.addEventListener("playing", handleAudioPlaying);
     audio.addEventListener("play", updateStatus);
-    audio.addEventListener("pause", updateStatus);
+    audio.addEventListener("pause", () => {
+      setAudioBuffering(false);
+      updateStatus();
+    });
     audio.addEventListener("ended", updateStatus);
     audio.addEventListener("timeupdate", handleAudioTimeUpdate);
     audio.addEventListener("ended", handleAudioEnded);

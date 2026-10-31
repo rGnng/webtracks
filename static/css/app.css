@@ -445,6 +445,46 @@ button:disabled {
   display: flex;
 }
 
+.lcd-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 6, 8, 0.46);
+  pointer-events: none;
+}
+
+.apple-spinner {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  color: rgba(242, 242, 247, 0.96);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
+}
+
+.apple-spinner span {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 7px;
+  margin-left: -1px;
+  margin-top: -12px;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: 1px 12px;
+  transform: rotate(calc(var(--i) * 30deg));
+  animation: apple-spinner-fade 1s linear infinite;
+  animation-delay: calc(var(--i) * -83ms);
+}
+
+@keyframes apple-spinner-fade {
+  0% { opacity: 0.95; }
+  100% { opacity: 0.12; }
+}
+
 .lcd-main {
   position: absolute;
   left: 45px;
