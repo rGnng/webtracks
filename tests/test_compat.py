@@ -552,6 +552,11 @@ class ApiTests(unittest.TestCase):
         response = app.test_client().get("/api/health")
         self.assertEqual(response.headers["Server"], "WebTracks")
 
+    def test_reload_endpoint_is_removed(self):
+        self.assertEqual(
+            self.client.post("/api/reload").status_code, 404
+        )
+
     def test_bootstrap_hides_filesystem_paths(self):
         boot = self.client.get("/api/bootstrap").get_json()
         self.assertNotIn("musicDirs", boot)

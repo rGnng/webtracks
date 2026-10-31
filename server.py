@@ -1821,11 +1821,6 @@ def create_app(config):
         except RuntimeError as exc:
             return _error(str(exc), 409)
 
-    @app.post("/api/reload")
-    def api_reload():
-        catalog.reload()
-        return _json_response({"reloaded": True})
-
     @app.post("/api/status")
     def api_status():
         body = request.get_json(silent=True) or {}
