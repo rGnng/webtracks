@@ -4265,6 +4265,7 @@
     const detailed = state.adminAuthenticated;
     const actions = !detailed ? "" : [
       ["Logins", totals.adminLogins],
+      ["Admin bruteforce blocked", totals.adminBruteforceBlocked],
       ["Scans", totals.scans],
       ["ReKeys", totals.rekeys],
       ["Artwork rebuilds", totals.artworkRebuilds],

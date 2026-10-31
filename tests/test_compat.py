@@ -26,6 +26,7 @@ from tracks_config import (  # noqa: E402
     load_settings,
     update_config,
 )
+from tracks_admin_guard import AdminLoginGuard  # noqa: E402
 from tracks_analytics import Analytics  # noqa: E402
 from tracks_logging import _compress_archive, configure_logging  # noqa: E402
 from tracks_rate_limit import DownloadRateLimiter  # noqa: E402
@@ -674,6 +675,57 @@ class ApiTests(unittest.TestCase):
         songs = self.client.get("/api/songs").get_json()["songs"]
         self.assertEqual(len(songs), 1)
 
+    def test_admin_login_bruteforce_lock_returns_password_error(self):
+        app = create_app(
+            Config(
+                self.db_path,
+                self.artwork,
+                read_only=False,
+                admin_bruteforce_limit=2,
+                admin_bruteforce_window_seconds=60,
+                admin_bruteforce_lock_seconds=3600,
+            )
+        )
+        client = app.test_client()
+        blocked_ip = {"X-Forwarded-For": "198.51.100.10"}
+        for _ in range(3):
+            response = client.post(
+                "/api/setup/login",
+                json={"password": "wrong"},
+                headers=blocked_ip,
+            )
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(
+                response.get_json()["error"], "Incorrect admin password"
+            )
+        # The lock applies even to the correct password and uses the same
+        # generic response.
+        locked = client.post(
+            "/api/setup/login",
+            json={"password": "1"},
+            headers=blocked_ip,
+        )
+        self.assertEqual(locked.status_code, 401)
+        self.assertEqual(
+            locked.get_json()["error"], "Incorrect admin password"
+        )
+        allowed_ip = {"X-Forwarded-For": "198.51.100.11"}
+        token = client.post(
+            "/api/setup/login",
+            json={"password": "1"},
+            headers=allowed_ip,
+        ).get_json()["token"]
+        stats = client.get(
+            "/api/setup/stats",
+            headers={
+                "Authorization": "Bearer " + token,
+                **allowed_ip,
+            },
+        ).get_json()
+        self.assertGreaterEqual(
+            stats["totals"]["adminBruteforceBlocked"], 2
+        )
+
     def test_setup_rebuild_artwork_job(self):
         self.assertEqual(
             self.client.post("/api/setup/artwork").status_code, 401
@@ -1178,6 +1230,40 @@ class LoggingTests(unittest.TestCase):
                 self._close_loggers((runtime, operations))
 
 
+class AdminLoginGuardTests(unittest.TestCase):
+    def test_locks_after_limit_is_exceeded_and_expires(self):
+        guard = AdminLoginGuard(
+            limit=2, window_seconds=60, lock_seconds=100,
+            clock=lambda: 1000.0,
+        )
+        self.assertFalse(guard.record_failure("ip", now=1000))
+        self.assertFalse(guard.record_failure("ip", now=1001))
+        self.assertTrue(guard.record_failure("ip", now=1002))
+        self.assertEqual(guard.is_locked("ip", now=1003), (True, 99))
+        self.assertTrue(guard.record_failure("ip", now=1050))
+        self.assertEqual(guard.is_locked("ip", now=1102), (False, 0))
+
+    def test_success_clears_failures_and_zero_limit_disables(self):
+        guard = AdminLoginGuard(limit=2, window_seconds=60, lock_seconds=100)
+        self.assertFalse(guard.record_failure("ip", now=10))
+        self.assertFalse(guard.record_failure("ip", now=11))
+        guard.record_success("ip")
+        self.assertFalse(guard.record_failure("ip", now=12))
+        disabled = AdminLoginGuard(limit=0)
+        self.assertFalse(disabled.record_failure("ip", now=1))
+        self.assertEqual(disabled.is_locked("ip", now=2), (False, 0))
+
+    def test_failures_outside_window_do_not_accumulate(self):
+        guard = AdminLoginGuard(
+            limit=2, window_seconds=60, lock_seconds=100,
+            clock=lambda: 0.0,
+        )
+        self.assertFalse(guard.record_failure("ip", now=0))
+        self.assertFalse(guard.record_failure("ip", now=30))
+        self.assertFalse(guard.record_failure("ip", now=61))
+        self.assertFalse(guard.is_locked("ip", now=62)[0])
+
+
 class AnalyticsTests(unittest.TestCase):
     def test_in_memory_traffic_and_operation_totals(self):
         clock = [1000.0]
@@ -1202,6 +1288,7 @@ class AnalyticsTests(unittest.TestCase):
         analytics.record_operation(
             "192.0.2.2", "download_rate_limited", "blocked"
         )
+        analytics.record_admin_blocked("192.0.2.1")
         clock[0] = 1005.0
         snapshot = analytics.snapshot()
         totals = snapshot["totals"]
@@ -1214,6 +1301,7 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(totals["uniqueSongs"], 1)
         self.assertEqual(totals["playlistActions"], 1)
         self.assertEqual(totals["adminLogins"], 1)
+        self.assertEqual(totals["adminBruteforceBlocked"], 1)
         self.assertEqual(totals["rateLimited"], 1)
         self.assertEqual(snapshot["uptimeSeconds"], 5)
         self.assertEqual(snapshot["clientCount"], 2)
@@ -1226,6 +1314,7 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(first["songsPlayed"], 2)
         self.assertEqual(first["uniqueSongs"], 1)
         self.assertEqual(first["playlistActions"], 1)
+        self.assertEqual(first["adminBlocked"], 1)
 
 
 class RateLimitTests(unittest.TestCase):
@@ -1501,6 +1590,45 @@ class ConfigTests(unittest.TestCase):
                 settings = load_settings(path)
                 self.assertEqual(settings["cover_size"], 2000)
                 self.assertEqual(settings["jpeg_quality"], 100)
+
+    def test_admin_bruteforce_defaults_and_env_override(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.yaml")
+            with open(path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({"database_dir": "var"}, handle)
+            with self._clean_env():
+                settings = load_settings(path)
+                self.assertEqual(settings["admin_bruteforce_limit"], 5)
+                self.assertEqual(
+                    settings["admin_bruteforce_window_seconds"], 60
+                )
+                self.assertEqual(
+                    settings["admin_bruteforce_lock_seconds"], 86400
+                )
+                os.environ["WEBTRACKS_ADMIN_BRUTEFORCE_LIMIT"] = "3"
+                os.environ[
+                    "WEBTRACKS_ADMIN_BRUTEFORCE_WINDOW_SECONDS"
+                ] = "30"
+                os.environ[
+                    "WEBTRACKS_ADMIN_BRUTEFORCE_LOCK_SECONDS"
+                ] = "120"
+                settings = load_settings(path)
+                self.assertEqual(settings["admin_bruteforce_limit"], 3)
+                self.assertEqual(
+                    settings["admin_bruteforce_window_seconds"], 30
+                )
+                self.assertEqual(
+                    settings["admin_bruteforce_lock_seconds"], 120
+                )
+            with open(path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({
+                    "database_dir": "var",
+                    "admin_bruteforce_limit": 0,
+                }, handle)
+            with self._clean_env():
+                self.assertEqual(
+                    load_settings(path)["admin_bruteforce_limit"], 0
+                )
 
     def test_rate_limit_defaults_and_env_override(self):
         with tempfile.TemporaryDirectory() as root:

@@ -47,6 +47,7 @@ class Analytics:
         self._artwork_rebuilds = 0
         self._settings_changes = 0
         self._rate_limited = 0
+        self._admin_bruteforce_blocked = 0
         self._action_counts = {}
 
     def _client(self, address):
@@ -64,6 +65,7 @@ class Analytics:
                 "uniqueSongs": set(),
                 "playlistActions": 0,
                 "adminLogins": 0,
+                "adminBlocked": 0,
                 "rateLimited": 0,
                 "lastPath": "",
                 "userAgent": "",
@@ -139,6 +141,16 @@ class Analytics:
             elif action in SETTINGS_ACTIONS and result == "success":
                 self._settings_changes += 1
 
+    def record_admin_blocked(self, address):
+        if not address:
+            return
+        now = self._clock()
+        with self._lock:
+            client = self._client(address)
+            client["lastSeen"] = now
+            client["adminBlocked"] += 1
+            self._admin_bruteforce_blocked += 1
+
     def snapshot(self, limit=12):
         now = self._clock()
         with self._lock:
@@ -156,6 +168,7 @@ class Analytics:
                     "uniqueSongs": len(client["uniqueSongs"]),
                     "playlistActions": client["playlistActions"],
                     "adminLogins": client["adminLogins"],
+                    "adminBlocked": client["adminBlocked"],
                     "rateLimited": client["rateLimited"],
                     "lastPath": client["lastPath"],
                     "userAgent": client["userAgent"],
@@ -182,6 +195,7 @@ class Analytics:
                     "artworkRebuilds": self._artwork_rebuilds,
                     "settingsChanges": self._settings_changes,
                     "rateLimited": self._rate_limited,
+                    "adminBruteforceBlocked": self._admin_bruteforce_blocked,
                 },
                 "clients": clients[:max(1, int(limit))],
                 "clientCount": len(clients),

@@ -29,6 +29,7 @@ from flask import (
     Flask, Response, current_app, request, send_file, send_from_directory,
 )
 
+from tracks_admin_guard import AdminLoginGuard
 from tracks_analytics import Analytics
 from tracks_transcode import (
     DEFAULT_CACHE_MB,
@@ -88,6 +89,9 @@ class Config:
                  transcode_cache_mb=None,
                  album_sort=None, album_sort_descending=None,
                  admin_password_sha1=None, libraries=None,
+                 admin_bruteforce_limit=None,
+                 admin_bruteforce_window_seconds=None,
+                 admin_bruteforce_lock_seconds=None,
                  logs_dir=None, log_level=None, log_format=None,
                  rate_limit=None, url_id_format=None):
         self.database = os.path.abspath(os.path.expanduser(database))
@@ -131,6 +135,27 @@ class Config:
         self.admin_password_sha1 = str(
             admin_password_sha1 or DEFAULT_ADMIN_PASSWORD_SHA1
         ).strip().lower()
+        try:
+            self.admin_bruteforce_limit = max(
+                0, int(admin_bruteforce_limit
+                       if admin_bruteforce_limit is not None else 5)
+            )
+        except (TypeError, ValueError):
+            self.admin_bruteforce_limit = 5
+        try:
+            self.admin_bruteforce_window_seconds = max(
+                1, int(admin_bruteforce_window_seconds
+                       if admin_bruteforce_window_seconds is not None else 60)
+            )
+        except (TypeError, ValueError):
+            self.admin_bruteforce_window_seconds = 60
+        try:
+            self.admin_bruteforce_lock_seconds = max(
+                1, int(admin_bruteforce_lock_seconds
+                       if admin_bruteforce_lock_seconds is not None else 86400)
+            )
+        except (TypeError, ValueError):
+            self.admin_bruteforce_lock_seconds = 86400
         self.logs_dir = (
             os.path.abspath(os.path.expanduser(logs_dir))
             if logs_dir else None
@@ -166,6 +191,13 @@ class Config:
             album_sort=settings.get("album_sort"),
             album_sort_descending=settings.get("album_sort_descending"),
             admin_password_sha1=settings.get("admin_password_sha1"),
+            admin_bruteforce_limit=settings.get("admin_bruteforce_limit"),
+            admin_bruteforce_window_seconds=settings.get(
+                "admin_bruteforce_window_seconds"
+            ),
+            admin_bruteforce_lock_seconds=settings.get(
+                "admin_bruteforce_lock_seconds"
+            ),
             logs_dir=settings.get("logs_dir"),
             log_level=settings.get("log_level"),
             log_format=settings.get("log_format"),
@@ -871,6 +903,11 @@ def create_app(config):
     artworks = ArtworkManager(config, catalog)
     analytics = Analytics()
     admin_auth = AdminAuth(config.admin_password_sha1)
+    admin_guard = AdminLoginGuard(
+        config.admin_bruteforce_limit,
+        config.admin_bruteforce_window_seconds,
+        config.admin_bruteforce_lock_seconds,
+    )
     presence = PresenceTracker()
     transcode_cache = TranscodeCache(
         config.transcode_cache_mb * 1024 * 1024
@@ -883,6 +920,7 @@ def create_app(config):
     app.extensions["tracks_artworks"] = artworks
     app.extensions["tracks_analytics"] = analytics
     app.extensions["tracks_admin_auth"] = admin_auth
+    app.extensions["tracks_admin_guard"] = admin_guard
     app.extensions["tracks_presence"] = presence
     app.extensions["tracks_transcode_cache"] = transcode_cache
     app.extensions["tracks_rate_limit"] = rate_limiter
@@ -1348,10 +1386,24 @@ def create_app(config):
     @app.post("/api/setup/login")
     def api_setup_login():
         body = request.get_json(silent=True) or {}
+        client_ip = _client_ip()
+        locked, _retry_after = admin_guard.is_locked(client_ip)
+        if locked:
+            analytics.record_admin_blocked(client_ip)
+            _log_operation("admin_login", "failure", reason="locked")
+            return _error("Incorrect admin password", 401)
         token = admin_auth.authenticate(body.get("password"))
         if not token:
-            _log_operation("admin_login", "failure", reason="invalid_password")
+            became_locked = admin_guard.record_failure(client_ip)
+            if became_locked:
+                analytics.record_admin_blocked(client_ip)
+            _log_operation(
+                "admin_login",
+                "failure",
+                reason="locked" if became_locked else "invalid_password",
+            )
             return _error("Incorrect admin password", 401)
+        admin_guard.record_success(client_ip)
         _log_operation("admin_login", "success")
         return _json_response({
             "authenticated": True,
@@ -1793,6 +1845,13 @@ def main(argv=None):
         album_sort=settings["album_sort"],
         album_sort_descending=settings["album_sort_descending"],
         admin_password_sha1=settings["admin_password_sha1"],
+        admin_bruteforce_limit=settings["admin_bruteforce_limit"],
+        admin_bruteforce_window_seconds=settings[
+            "admin_bruteforce_window_seconds"
+        ],
+        admin_bruteforce_lock_seconds=settings[
+            "admin_bruteforce_lock_seconds"
+        ],
         logs_dir=settings["logs_dir"],
         log_level=settings["log_level"],
         log_format=settings["log_format"],

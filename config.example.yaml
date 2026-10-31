@@ -32,8 +32,15 @@ album_sort: recentlyAdded
 album_sort_descending: true
 
 # SHA-1 of the Setup admin password. The value below is the development
-# default for the password "1". Change it from Setup -> Settings.
+# default for the password "1". Change it from Setup -> Admin.
 admin_password_sha1: "356a192b7913b04c54574d18c28d46e6395428ab"
+
+# In-memory admin login brute-force protection, applied per source IP.
+# More than this many failures in the window locks the IP for the lock period.
+# Set the limit to 0 to disable.
+admin_bruteforce_limit: 5
+admin_bruteforce_window_seconds: 60
+admin_bruteforce_lock_seconds: 86400
 
 # Runtime and operation logs: runtime.log and operations.log.
 # log_format: text writes human-readable lines; json writes one JSON object

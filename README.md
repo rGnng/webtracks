@@ -59,8 +59,8 @@ queue overlay, and a 24pt status bar.
 - In-memory usage statistics: the six summary counters are visible in Setup
   without logging in, while per-IP details with current online connection
   counts, transferred bytes, songs played, playlist actions, scans/ReKey/
-  artwork jobs, and rate-limit events appear after admin login. Statistics
-  reset when the server restarts.
+  artwork jobs, rate-limit events, and blocked brute-force logins appear after
+  admin login. Statistics reset when the server restarts.
 - All frontend assets live under `static/`; there are no CDN requests.
 
 ## Requirements
@@ -129,7 +129,10 @@ the built-in defaults on first run.
 | `transcode_cache_mb` | Transcode cache limit in MiB, shared across all qualities, default 512. `0` transcodes without retaining output. |
 | `album_sort` | Default Albums sort: `recentlyAdded`, `album`, `artist`, or `year`; defaults to `recentlyAdded`. |
 | `album_sort_descending` | Whether the default sort is descending; defaults to `true` (recently added first). |
-| `admin_password_sha1` | SHA-1 of the Setup admin password (40 hex characters). Prefer changing it from **Setup → Settings**. The development default is the single digit `1`, which hashes to `356a192b7913b04c54574d18c28d46e6395428ab`. |
+| `admin_password_sha1` | SHA-1 of the Setup admin password (40 hex characters). Prefer changing it from **Setup → Admin**. The development default is the single digit `1`, which hashes to `356a192b7913b04c54574d18c28d46e6395428ab`. |
+| `admin_bruteforce_limit` | Failed admin logins allowed per source IP inside the window before locking; default `5`. The next failure locks the IP. Set to `0` to disable brute-force protection. |
+| `admin_bruteforce_window_seconds` | Rolling failure window in seconds; default `60`. |
+| `admin_bruteforce_lock_seconds` | Lock duration in seconds; default `86400` (24 hours). Lock state is in memory and resets on restart. |
 | `logs_dir` | Directory for `runtime.log` and `operations.log`; default `logs`, relative to `config.yaml`. |
 | `log_level` | Runtime log threshold (`DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`); default `INFO`. The operation log always records at `INFO`. |
 | `log_format` | Format for both log files: `text` (default) or `json`. Text uses timestamped human-readable lines; JSON writes one object per line. |
@@ -191,6 +194,9 @@ export WEBTRACKS_LOG_FORMAT=text
 export WEBTRACKS_RATE_LIMIT=28
 export WEBTRACKS_COVER_SIZE=500
 export WEBTRACKS_JPEG_QUALITY=80
+export WEBTRACKS_ADMIN_BRUTEFORCE_LIMIT=5
+export WEBTRACKS_ADMIN_BRUTEFORCE_WINDOW_SECONDS=60
+export WEBTRACKS_ADMIN_BRUTEFORCE_LOCK_SECONDS=86400
 ```
 
 Read-only mode:
@@ -272,6 +278,10 @@ and ReKey require signing in first:
 - Password field: `Enter admin password`
 - Only the SHA-1 of the password is stored, in `admin_password_sha1`
 - The development password is `1`
+- Per-IP brute-force protection: by default the 6th failed login within a
+  minute locks that IP for 24 hours. Locked requests always receive the same
+  generic “Incorrect admin password” response, even with the correct password.
+  Locks and failure counters are in memory only
 - While signed out, library folders, action buttons, and settings are hidden or
   greyed out
 - **Usage statistics** sits above the bottom **Admin** section. Logged-out

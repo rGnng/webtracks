@@ -36,6 +36,9 @@ DEFAULT_SETTINGS = {
     "album_sort": "recentlyAdded",
     "album_sort_descending": True,
     "admin_password_sha1": DEFAULT_ADMIN_PASSWORD_SHA1,
+    "admin_bruteforce_limit": 5,
+    "admin_bruteforce_window_seconds": 60,
+    "admin_bruteforce_lock_seconds": 86400,
     "logs_dir": "logs",
     "log_level": "INFO",
     "log_format": "text",
@@ -97,6 +100,14 @@ def _as_megabytes(value, fallback):
     except (TypeError, ValueError):
         return fallback
     return max(0, size)
+
+
+def _as_nonnegative_int(value, fallback):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(0, number)
 
 
 def _read_config(path):
@@ -305,6 +316,36 @@ def load_settings(config_path=None):
         raise ValueError(
             "admin_password_sha1 must be a 40-character SHA-1 hex digest"
         )
+    admin_bruteforce_limit = _as_nonnegative_int(
+        os.environ.get(
+            "WEBTRACKS_ADMIN_BRUTEFORCE_LIMIT",
+            values.get(
+                "admin_bruteforce_limit",
+                DEFAULT_SETTINGS["admin_bruteforce_limit"],
+            ),
+        ),
+        DEFAULT_SETTINGS["admin_bruteforce_limit"],
+    )
+    admin_bruteforce_window_seconds = max(1, _as_nonnegative_int(
+        os.environ.get(
+            "WEBTRACKS_ADMIN_BRUTEFORCE_WINDOW_SECONDS",
+            values.get(
+                "admin_bruteforce_window_seconds",
+                DEFAULT_SETTINGS["admin_bruteforce_window_seconds"],
+            ),
+        ),
+        DEFAULT_SETTINGS["admin_bruteforce_window_seconds"],
+    ))
+    admin_bruteforce_lock_seconds = max(1, _as_nonnegative_int(
+        os.environ.get(
+            "WEBTRACKS_ADMIN_BRUTEFORCE_LOCK_SECONDS",
+            values.get(
+                "admin_bruteforce_lock_seconds",
+                DEFAULT_SETTINGS["admin_bruteforce_lock_seconds"],
+            ),
+        ),
+        DEFAULT_SETTINGS["admin_bruteforce_lock_seconds"],
+    ))
     logs_dir = os.path.realpath(_expand(
         os.environ.get(
             "WEBTRACKS_LOG_DIR",
@@ -367,6 +408,10 @@ def load_settings(config_path=None):
         "album_sort": album_sort,
         "album_sort_descending": album_sort_descending,
         "admin_password_sha1": admin_password_sha1,
+        "admin_bruteforce_limit": admin_bruteforce_limit,
+        "admin_bruteforce_window_seconds":
+            admin_bruteforce_window_seconds,
+        "admin_bruteforce_lock_seconds": admin_bruteforce_lock_seconds,
         "logs_dir": logs_dir,
         "log_level": log_level,
         "log_format": log_format,
