@@ -122,6 +122,8 @@
 
   const el = {};
 
+  let mediaSessionMetadataKey = "";
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
   } else {
@@ -152,10 +154,12 @@
     el.lcdArt.addEventListener("error", () => {
       el.lcdArtWrap.classList.add("no-art");
     });
+    el.lcdArt.addEventListener("load", syncMediaSessionMetadata);
 
     loadPrefs();
     restorePlayer();
     bindEvents();
+    bindMediaSessionActions();
     applyAudioQualityUI();
     refreshSystemStatus();
     setInterval(refreshSystemStatus, 5000);
@@ -3515,6 +3519,134 @@
     el.lcdStarUse.setAttribute("href", loved ? "#i-star-fill" : "#i-star");
   }
 
+  // ---------------------------------------------------------------------
+  // Media Session (macOS Now Playing, Control Center, hardware media keys)
+
+  function mediaSessionSupported() {
+    return typeof navigator !== "undefined" && "mediaSession" in navigator;
+  }
+
+  function mediaSessionArtwork(song) {
+    if (!song || !song.albumId) return [];
+    const artwork = {
+      src: new URL(artURL(song.albumId), window.location.href).href,
+    };
+    // Safari matches artwork by its declared size.  The LCD image has already
+    // fetched this cover, so use its intrinsic dimensions instead of guessing
+    // from cover_size (which can differ between libraries).
+    if (el.lcdArt && state.lcdSongId === song.id
+        && el.lcdArt.complete && el.lcdArt.naturalWidth > 0) {
+      artwork.sizes = `${el.lcdArt.naturalWidth}x${el.lcdArt.naturalHeight}`;
+    }
+    return [artwork];
+  }
+
+  function syncMediaSessionMetadata() {
+    if (!mediaSessionSupported() || typeof MediaMetadata !== "function") return;
+    const song = currentSong();
+    if (!song) {
+      mediaSessionMetadataKey = "";
+      try {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.playbackState = "none";
+      } catch (_) {
+        // Ignore browsers that expose mediaSession without metadata support.
+      }
+      return;
+    }
+    const artwork = mediaSessionArtwork(song);
+    const key = [
+      song.id,
+      state.artVersion,
+      artwork[0] ? (artwork[0].sizes || "") : "",
+    ].join("|");
+    if (key === mediaSessionMetadataKey) return;
+    mediaSessionMetadataKey = key;
+    const metadata = {
+      title: song.title || "",
+      artist: song.artist || song.albumArtist || "",
+      album: song.album || "",
+    };
+    if (artwork.length) metadata.artwork = artwork;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata(metadata);
+    } catch (_) {
+      // Ignore invalid metadata values.
+    }
+  }
+
+  function syncMediaSessionPlaybackState() {
+    if (!mediaSessionSupported()) return;
+    const song = currentSong();
+    let playbackState = "none";
+    if (song) playbackState = player.playing && !audio.ended ? "playing" : "paused";
+    try {
+      navigator.mediaSession.playbackState = playbackState;
+    } catch (_) {
+      // Ignore read-only or unsupported playback state.
+    }
+  }
+
+  function syncMediaSessionPosition() {
+    if (!mediaSessionSupported()
+        || typeof navigator.mediaSession.setPositionState !== "function") return;
+    const song = currentSong();
+    const duration = currentDuration();
+    if (!song || !Number.isFinite(duration) || duration <= 0) {
+      try {
+        navigator.mediaSession.setPositionState();
+      } catch (_) {
+        // Ignore.
+      }
+      return;
+    }
+    const position = clamp(Number(player.elapsed) || 0, 0, duration);
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: Number.isFinite(audio.playbackRate)
+          ? audio.playbackRate : 1,
+        position,
+      });
+    } catch (_) {
+      // Ignore positions that a browser considers invalid.
+    }
+  }
+
+  function bindMediaSessionActions() {
+    if (!mediaSessionSupported()) return;
+    const seekBy = (delta) => {
+      if (!currentSong()) return;
+      const duration = currentDuration();
+      if (duration <= 0) return;
+      seekToFraction((player.elapsed + delta) / duration);
+    };
+    const handlers = {
+      play: () => {
+        if (audio.paused) togglePlayPause();
+      },
+      pause: () => {
+        if (!audio.paused) togglePlayPause();
+      },
+      previoustrack: previousTrack,
+      nexttrack: nextTrack,
+      seekbackward: () => seekBy(-10),
+      seekforward: () => seekBy(10),
+      seekto: (details) => {
+        const duration = currentDuration();
+        if (!details || !Number.isFinite(details.seekTime) || duration <= 0) return;
+        seekToFraction(details.seekTime / duration);
+      },
+    };
+    Object.keys(handlers).forEach((action) => {
+      try {
+        navigator.mediaSession.setActionHandler(action, handlers[action]);
+      } catch (_) {
+        // The browser does not support this action; keep the others.
+      }
+    });
+  }
+
   function updateProgressUI() {
     const duration = currentDuration();
     const elapsed = clamp(
@@ -3531,11 +3663,14 @@
       : fmtTime(duration);
     el.lcdDuration.title = state.showRemaining
       ? "Show Total Time" : "Show Remaining Time";
+    syncMediaSessionPosition();
   }
 
   function renderPlayerUI() {
     const song = currentSong();
     const isPlaying = player.playing;
+    syncMediaSessionMetadata();
+    syncMediaSessionPlaybackState();
     el.playUse.setAttribute("href", isPlaying ? "#i-pause" : "#i-play");
     el.playButton.title = isPlaying ? "Pause" : "Play";
     el.playButton.setAttribute("aria-label", isPlaying ? "Pause" : "Play");
@@ -3582,6 +3717,11 @@
       : (song.artist || "");
     el.lcdTitleButton.title = song.album ? "Show album" : "";
     updateLcdStar();
+    // The LCD image above may already be cached (for example when advancing
+    // within one album), so refresh metadata again now that state.lcdSongId
+    // and the image source match the new song.
+    syncMediaSessionMetadata();
+    syncMediaSessionPlaybackState();
     updateProgressUI();
     updateStatus();
   }
@@ -6420,11 +6560,18 @@
     audio.addEventListener("waiting", () => setAudioBuffering(true));
     audio.addEventListener("stalled", () => setAudioBuffering(true));
     audio.addEventListener("playing", handleAudioPlaying);
-    audio.addEventListener("play", updateStatus);
+    audio.addEventListener("play", () => {
+      updateStatus();
+      syncMediaSessionPlaybackState();
+      syncMediaSessionPosition();
+    });
     audio.addEventListener("pause", () => {
       setAudioBuffering(false);
       updateStatus();
+      syncMediaSessionPlaybackState();
+      syncMediaSessionPosition();
     });
+    audio.addEventListener("seeked", syncMediaSessionPosition);
     audio.addEventListener("ended", updateStatus);
     audio.addEventListener("timeupdate", handleAudioTimeUpdate);
     audio.addEventListener("ended", handleAudioEnded);

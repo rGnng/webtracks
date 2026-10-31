@@ -16,6 +16,10 @@ queue overlay, and a 24pt status bar.
 ## Features
 
 - Plays FLAC / MP3 / M4A / WAV / AIFF / OGG / Opus, with HTTP Range seeking.
+- macOS Now Playing and Control Center integration through the Media Session
+  API: title, artist, album, cover art, progress, plus previous / next /
+  play / pause / seek actions from the media keys. Browsers only expose this
+  on localhost or HTTPS; plain HTTP on a LAN address is not a secure context.
 - Quality selection: the waveform button in the toolbar opens a menu built from
   the `audio_formats` list in `config.yaml`. The default is AAC · 128 kbps,
   transcoded and streamed live by ffmpeg; add other AAC bitrates or a `raw`
