@@ -32,10 +32,9 @@ from flask import (
 from tracks_admin_guard import AdminLoginGuard
 from tracks_analytics import Analytics
 from tracks_transcode import (
+    DEFAULT_AUDIO_FORMATS,
     DEFAULT_CACHE_MB,
-    DEFAULT_QUALITY,
-    QUALITIES,
-    QUALITY_BY_ID,
+    build_quality_specs,
     TranscodeCache,
     TranscodeError,
 )
@@ -87,6 +86,7 @@ class Config:
     def __init__(self, database, artwork, read_only=False, jpeg_quality=None,
                  cover_size=None, music_dirs=None, config_path=None,
                  transcode_cache_mb=None,
+                 audio_formats=None, default_audio_format=None,
                  album_sort=None, album_sort_descending=None,
                  admin_password_sha1=None, libraries=None,
                  admin_bruteforce_limit=None,
@@ -127,6 +127,39 @@ class Config:
             ))
         except (TypeError, ValueError):
             self.transcode_cache_mb = DEFAULT_CACHE_MB
+        try:
+            self.audio_quality_specs = build_quality_specs(
+                audio_formats if audio_formats is not None
+                else DEFAULT_AUDIO_FORMATS
+            )
+        except ValueError:
+            self.audio_quality_specs = build_quality_specs(
+                DEFAULT_AUDIO_FORMATS
+            )
+        self.audio_quality_by_id = {
+            spec["id"]: spec for spec in self.audio_quality_specs
+        }
+        self.transcodable_qualities = tuple(
+            spec for spec in self.audio_quality_specs
+            if spec["format"] != "raw"
+        )
+        try:
+            default_index = int(
+                default_audio_format
+                if default_audio_format is not None
+                else self.audio_quality_specs[0]["index"]
+            )
+        except (TypeError, ValueError):
+            default_index = self.audio_quality_specs[0]["index"]
+        if default_index not in {
+            spec["index"] for spec in self.audio_quality_specs
+        }:
+            default_index = self.audio_quality_specs[0]["index"]
+        self.default_audio_format = default_index
+        self.default_audio_quality = next(
+            spec["id"] for spec in self.audio_quality_specs
+            if spec["index"] == default_index
+        )
         self.album_sort = album_sort or "recentlyAdded"
         self.album_sort_descending = (
             True if album_sort_descending is None
@@ -187,6 +220,8 @@ class Config:
             music_dirs=settings.get("music_dirs") or [],
             config_path=settings.get("config_path"),
             transcode_cache_mb=settings.get("transcode_cache_mb"),
+            audio_formats=settings.get("audio_formats"),
+            default_audio_format=settings.get("default_audio_format"),
             libraries=settings.get("libraries") or [],
             album_sort=settings.get("album_sort"),
             album_sort_descending=settings.get("album_sort_descending"),
@@ -245,6 +280,37 @@ class PresenceTracker:
                 if address:
                     counts[address] = counts.get(address, 0) + 1
             return counts
+
+
+class PlayTracker:
+    """Count one play per client playback session.
+
+    The web player adds a random ``play`` query parameter to audio requests.
+    Range and quality requests reuse it, so a single playback only increments
+    the count once. Clients that do not send a token fall back to a per-IP
+    window.
+    """
+
+    def __init__(self, ttl=6 * 60 * 60, fallback_ttl=5 * 60,
+                 max_entries=20000):
+        self.ttl = max(1, int(ttl))
+        self.fallback_ttl = max(1, int(fallback_ttl))
+        self.max_entries = max(1, int(max_entries))
+        self._entries = {}
+        self._lock = threading.Lock()
+
+    def claim(self, key, ttl=None):
+        now = time.monotonic()
+        with self._lock:
+            expires = self._entries.get(key)
+            if expires is not None and expires > now:
+                return False
+            self._entries[key] = now + (
+                self.ttl if ttl is None else max(1, int(ttl))
+            )
+            while len(self._entries) > self.max_entries:
+                self._entries.pop(next(iter(self._entries)))
+            return True
 
 
 class AdminAuth:
@@ -938,8 +1004,10 @@ def create_app(config):
         config.admin_bruteforce_lock_seconds,
     )
     presence = PresenceTracker()
+    play_tracker = PlayTracker()
     transcode_cache = TranscodeCache(
-        config.transcode_cache_mb * 1024 * 1024
+        config.transcode_cache_mb * 1024 * 1024,
+        qualities=config.transcodable_qualities,
     )
     rate_limiter = DownloadRateLimiter(config.rate_limit)
     app.extensions["tracks_catalog"] = catalog
@@ -951,6 +1019,7 @@ def create_app(config):
     app.extensions["tracks_admin_auth"] = admin_auth
     app.extensions["tracks_admin_guard"] = admin_guard
     app.extensions["tracks_presence"] = presence
+    app.extensions["tracks_play_tracker"] = play_tracker
     app.extensions["tracks_transcode_cache"] = transcode_cache
     app.extensions["tracks_rate_limit"] = rate_limiter
 
@@ -1188,17 +1257,6 @@ def create_app(config):
         except KeyError:
             return _error("Song not found", 404)
 
-    @app.post("/api/songs/<song_id>/played")
-    def api_played(song_id):
-        try:
-            plays = catalog.record_play(song_id)
-            analytics.record_play(_client_ip(), song_id)
-            return _json_response({"id": song_id, "plays": plays})
-        except ReadOnlyError as exc:
-            return _error(str(exc), 403)
-        except KeyError:
-            return _error("Song not found", 404)
-
     @app.get("/api/artwork/<album_id>")
     def api_artwork(album_id):
         album_id = album_id.upper()
@@ -1226,13 +1284,19 @@ def create_app(config):
     @app.get("/api/quality")
     def api_quality():
         return _json_response({
-            "default": DEFAULT_QUALITY,
+            "default": config.default_audio_quality,
             "qualities": [
                 {
-                    key: quality[key]
-                    for key in ("id", "label", "detail", "bitrate", "mime")
+                    "id": spec["id"],
+                    "index": spec["index"],
+                    "format": spec["format"],
+                    "label": spec["label"],
+                    "detail": spec["detail"],
+                    "bitrate": spec["bitrate"],
+                    "mime": spec["mime"],
+                    "raw": bool(spec.get("raw")),
                 }
-                for quality in QUALITIES
+                for spec in config.audio_quality_specs
             ],
         })
 
@@ -1248,6 +1312,30 @@ def create_app(config):
             "retryAfter": retry_after,
             "limit": rate_limiter.limit,
         })
+
+    def _record_playback(song_id, quality):
+        play_id = (request.args.get("play") or "").strip()[:128]
+        client_ip = _client_ip()
+        if play_id:
+            key = (song_id, play_id)
+            ttl = play_tracker.ttl
+        else:
+            key = (song_id, quality, client_ip)
+            ttl = play_tracker.fallback_ttl
+        if not play_tracker.claim(key, ttl):
+            return
+        try:
+            plays = catalog.record_play(song_id)
+        except ReadOnlyError:
+            return
+        except Exception:
+            runtime_log.exception(
+                "Could not record play for song %s", song_id
+            )
+            return
+        if plays is None:
+            return
+        analytics.record_play(client_ip, song_id)
 
     @app.get("/api/audio/<song_id>")
     def api_audio(song_id):
@@ -1270,9 +1358,18 @@ def create_app(config):
             response.headers["Retry-After"] = str(retry_after)
             return response
 
-        quality = (request.args.get("quality") or "original").strip()
-        spec = QUALITY_BY_ID.get(quality)
-        if spec is not None:
+        quality = (request.args.get("quality") or "").strip()
+        if not quality:
+            quality = config.default_audio_quality
+        if quality == "original":
+            quality = (
+                "raw" if "raw" in config.audio_quality_by_id else ""
+            )
+        spec = config.audio_quality_by_id.get(quality)
+        if spec is None:
+            return _error("Unsupported audio quality", 400)
+
+        if not spec.get("raw"):
             try:
                 data, etag = transcode_cache.get_or_encode(
                     song_id, path, quality
@@ -1284,16 +1381,18 @@ def create_app(config):
                     "Could not transcode audio for song %s", song_id
                 )
                 return _error("Could not transcode audio", 500)
-            return _byte_range_response(data, spec["mime"], etag)
-        if quality not in ("", "original"):
-            return _error("Unsupported audio quality", 400)
+            response = _byte_range_response(data, spec["mime"], etag)
+            if (request.method != "HEAD"
+                    and response.status_code in (200, 206)):
+                _record_playback(song_id, quality)
+            return response
 
         mime = AUDIO_TYPES.get(
             os.path.splitext(path)[1].lower(),
             mimetypes.guess_type(path)[0] or "application/octet-stream",
         )
         try:
-            return send_file(
+            response = send_file(
                 path,
                 mimetype=mime,
                 conditional=True,
@@ -1303,6 +1402,10 @@ def create_app(config):
             )
         except OSError:
             return _error("Audio file could not be read", 404)
+        if (request.method != "HEAD"
+                and response.status_code in (200, 206)):
+            _record_playback(song_id, quality)
+        return response
 
     @app.get("/api/setup")
     def api_setup():
@@ -1893,6 +1996,8 @@ def main(argv=None):
             if args.transcode_cache_mb is None
             else args.transcode_cache_mb
         ),
+        audio_formats=settings["audio_formats"],
+        default_audio_format=settings["default_audio_format"],
         album_sort=settings["album_sort"],
         album_sort_descending=settings["album_sort_descending"],
         admin_password_sha1=settings["admin_password_sha1"],

@@ -493,7 +493,15 @@ class ApiTests(unittest.TestCase):
         self.db.sync_tracks([track], self.db.load_libraries())
         self.artwork = os.path.join(self.root, "Artwork")
         app = create_app(
-            Config(self.db_path, self.artwork, read_only=False)
+            Config(
+                self.db_path,
+                self.artwork,
+                read_only=False,
+                audio_formats=[
+                    {"index": 0, "format": "aac", "bitrate": 128},
+                    {"index": 1, "format": "raw"},
+                ],
+            )
         )
         self.client = app.test_client()
         boot = self.client.get("/api/bootstrap").get_json()
@@ -515,7 +523,9 @@ class ApiTests(unittest.TestCase):
             "/api/albums/" + self.album_id
         )
         self.assertEqual(album.status_code, 200)
-        audio = self.client.get("/api/audio/" + self.song_id)
+        audio = self.client.get(
+            "/api/audio/%s?quality=raw" % self.song_id
+        )
         self.assertEqual(audio.status_code, 200)
         self.assertEqual(audio.mimetype, "audio/wav")
         audio.close()
@@ -553,6 +563,36 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(info["retryAfter"], 6)
         self.assertEqual(info["limit"], 28)
 
+    def test_audio_records_play_once_per_play_id(self):
+        def plays():
+            songs = self.client.get("/api/songs").get_json()["songs"]
+            return next(
+                song["plays"] for song in songs
+                if song["id"] == self.song_id
+            )
+
+        before = plays()
+        for _ in range(2):
+            response = self.client.get(
+                "/api/audio/%s?quality=raw&play=session-1" % self.song_id
+            )
+            self.assertEqual(response.status_code, 200)
+            response.close()
+        self.assertEqual(plays(), before + 1)
+
+        response = self.client.get(
+            "/api/audio/%s?quality=raw&play=session-2" % self.song_id
+        )
+        self.assertEqual(response.status_code, 200)
+        response.close()
+        self.assertEqual(plays(), before + 2)
+        self.assertEqual(
+            self.client.post(
+                "/api/songs/%s/played" % self.song_id
+            ).status_code,
+            404,
+        )
+
     def test_setup_stats_public_summary_and_admin_details(self):
         public = self.client.get("/api/setup/stats")
         self.assertEqual(public.status_code, 200)
@@ -569,7 +609,11 @@ class ApiTests(unittest.TestCase):
         self.client.post(
             "/api/status", json={"client": "stats-client"}
         )
-        self.client.post("/api/songs/%s/played" % self.song_id)
+        audio = self.client.get(
+            "/api/audio/%s?quality=raw&play=stats-play" % self.song_id
+        )
+        self.assertEqual(audio.status_code, 200)
+        audio.close()
         stats = self.client.get(
             "/api/setup/stats", headers=headers
         ).get_json()
@@ -1497,6 +1541,39 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(
                     load_settings(path)["transcode_cache_mb"], 32
                 )
+
+    def test_audio_formats_default_and_override(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('{"database_dir": "var"}')
+            with self._clean_env():
+                settings = load_settings(path)
+            self.assertEqual(
+                settings["audio_formats"],
+                [{"index": 0, "format": "aac", "bitrate": 128}],
+            )
+            self.assertEqual(settings["default_audio_format"], 0)
+
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "audio_formats": [
+                        {"index": 0, "format": "aac", "bitrate": 128},
+                        {"index": 1, "format": "aac", "bitrate": 96},
+                        {"index": 2, "format": "raw"},
+                    ],
+                    "default_audio_format": 1,
+                }, handle)
+            with self._clean_env():
+                settings = load_settings(path)
+            self.assertEqual(
+                [entry["format"] for entry in settings["audio_formats"]],
+                ["aac", "aac", "raw"],
+            )
+            self.assertEqual(
+                settings["audio_formats"][1]["bitrate"], 96
+            )
+            self.assertEqual(settings["default_audio_format"], 1)
 
     def test_album_sort_defaults_and_override(self):
         with tempfile.TemporaryDirectory() as root:

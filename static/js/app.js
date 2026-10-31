@@ -59,7 +59,9 @@
     albumSortInitialized: false,
     urlIdFormat: "uuid",
     songSorts: {},
-    audioQuality: "aac128",
+    audioQuality: "",
+    audioQualities: [],
+    defaultAudioQuality: "",
     songRows: [],
     songContext: { kind: "songs", playlistId: null },
     songVirtual: null,
@@ -109,6 +111,7 @@
     shuffle: false,
     repeat: "off",
     pendingRecord: false,
+    playId: "",
     buffering: false,
     loadedSongId: null,
     pendingSeek: null,
@@ -785,7 +788,7 @@
     if (prefs.songSorts && typeof prefs.songSorts === "object") {
       state.songSorts = prefs.songSorts;
     }
-    if (prefs.audioQuality === "aac128") {
+    if (typeof prefs.audioQuality === "string") {
       state.audioQuality = prefs.audioQuality;
     }
   }
@@ -814,9 +817,15 @@
     const version = Math.round(
       (Number(song.mtime) || Number(song.dateAdded) || 0) * 1000
     );
-    return `/api/audio/${encodeURIComponent(song.id)}`
-      + `?quality=${encodeURIComponent(state.audioQuality)}`
-      + `&v=${version}`;
+    const query = [];
+    if (state.audioQuality) {
+      query.push(`quality=${encodeURIComponent(state.audioQuality)}`);
+    }
+    if (player.playId) {
+      query.push(`play=${encodeURIComponent(player.playId)}`);
+    }
+    query.push(`v=${version}`);
+    return `/api/audio/${encodeURIComponent(song.id)}?${query.join("&")}`;
   }
 
   const CLIENT_ID_KEY = "tracksWeb.clientId.v1";
@@ -933,37 +942,54 @@
     }
   }
 
+  function audioQualityLabel(quality) {
+    if (!quality) return state.audioQuality || "Auto";
+    const detail = quality.detail
+      || (quality.bitrate ? `${quality.bitrate} kbps` : "");
+    return detail ? `${quality.label} · ${detail}` : quality.label;
+  }
+
   function applyAudioQualityUI() {
-    const label = state.audioQuality === "aac128"
-      ? "AAC · 128 kbps" : state.audioQuality;
-    el.qualityButton.title = `Audio quality: ${label}`;
-    el.qualityButton.setAttribute(
-      "aria-label", `Audio quality: ${label}`
+    const quality = state.audioQualities.find(
+      (item) => item.id === state.audioQuality
     );
+    const label = audioQualityLabel(quality);
+    el.qualityButton.title = `Audio quality: ${label}`;
+    el.qualityButton.setAttribute("aria-label", `Audio quality: ${label}`);
+  }
+
+  async function loadAudioQualities() {
+    try {
+      const info = await api("/api/quality");
+      const qualities = (info && Array.isArray(info.qualities))
+        ? info.qualities : [];
+      if (!qualities.length) return;
+      state.audioQualities = qualities;
+      state.defaultAudioQuality = info.default || qualities[0].id;
+      if (!qualities.some((item) => item.id === state.audioQuality)) {
+        state.audioQuality = state.defaultAudioQuality;
+      }
+      applyAudioQualityUI();
+    } catch (_) {
+      // Keep the current selection when the catalog is unavailable.
+    }
   }
 
   async function openQualityMenu(anchor) {
     const rect = anchor.getBoundingClientRect();
-    let info = null;
-    try {
-      info = await api("/api/quality");
-    } catch (_) {
-      info = null;
+    if (!state.audioQualities.length) {
+      await loadAudioQualities();
     }
-    const qualities = (info && Array.isArray(info.qualities))
-      ? info.qualities
-      : [{
+    if (!state.audioQualities.length) {
+      state.audioQualities = [{
         id: "aac128", label: "AAC", detail: "128 kbps",
       }];
-    const items = qualities.map((quality) => {
-      const detail = quality.detail
-        || (quality.bitrate ? `${quality.bitrate} kbps` : "");
-      return {
-        label: detail ? `${quality.label} · ${detail}` : quality.label,
-        checked: state.audioQuality === quality.id,
-        action: () => selectAudioQuality(quality.id),
-      };
-    });
+    }
+    const items = state.audioQualities.map((quality) => ({
+      label: audioQualityLabel(quality),
+      checked: state.audioQuality === quality.id,
+      action: () => selectAudioQuality(quality.id),
+    }));
     showMenu(rect.left, rect.bottom + 4, items);
   }
 
@@ -1029,6 +1055,7 @@
     try {
       const data = await api("/api/bootstrap");
       applyBootstrap(data);
+      await loadAudioQualities();
       renderSectionTabs();
       if (state.needsSetup) {
         renderWelcome();
@@ -3150,6 +3177,17 @@
     if (state.queueOpen) renderQueuePopover();
   }
 
+  function newPlayId() {
+    try {
+      if (window.crypto && window.crypto.randomUUID) {
+        return window.crypto.randomUUID();
+      }
+    } catch (_) {
+      // Fall through to the timestamp-based value.
+    }
+    return `play-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
   function recordPlaybackStart(song) {
     if (!song) return;
     addHistory(song);
@@ -3157,16 +3195,6 @@
     const previous = Number(song.plays) || 0;
     patchSong(song.id, { plays: previous + 1 });
     if (state.songVirtual) state.songVirtual.rerender();
-    api(`/api/songs/${encodeURIComponent(song.id)}/played`, { method: "POST" })
-      .then((data) => {
-        if (data && typeof data.plays === "number") {
-          patchSong(song.id, { plays: data.plays });
-          if (state.songVirtual) state.songVirtual.rerender();
-        }
-      })
-      .catch(() => {
-        // Play counts are non-critical.
-      });
   }
 
   function shuffleArray(items) {
@@ -3215,6 +3243,7 @@
     player.playing = true;
     player.elapsed = 0;
     player.pendingRecord = countPlay ? song.id : false;
+    if (countPlay) player.playId = newPlayId();
     player.loadedSongId = null;
     player.pendingSeek = 0;
     player.pendingPlay = true;
@@ -3242,6 +3271,7 @@
     player.playing = true;
     player.elapsed = 0;
     player.pendingRecord = countPlay ? song.id : false;
+    if (countPlay) player.playId = newPlayId();
     player.pendingSeek = 0;
     player.pendingPlay = true;
     player.loadedSongId = null;

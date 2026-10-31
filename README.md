@@ -14,13 +14,14 @@ queue overlay, and a 24pt status bar.
 ## Features
 
 - Plays FLAC / MP3 / M4A / WAV / AIFF / OGG / Opus, with HTTP Range seeking.
-- Quality selection: the waveform button in the toolbar opens a menu that
-  currently offers AAC · 128 kbps, transcoded and streamed live by ffmpeg.
-  Transcode output goes into a shared in-memory cache (512 MB by default);
-  future qualities such as MP3 share the same capacity. Entries stay for the
-  process lifetime and are cleared only when a new item would overflow the
-  budget. Transcodes contain only the audio stream: artwork, chapters, and
-  source tags are stripped before transmission.
+- Quality selection: the waveform button in the toolbar opens a menu built from
+  the `audio_formats` list in `config.yaml`. The default is AAC · 128 kbps,
+  transcoded and streamed live by ffmpeg; add other AAC bitrates or a `raw`
+  entry for the original file. Transcode output goes into a shared in-memory
+  cache (512 MB by default); all qualities share the same capacity. Entries
+  stay for the process lifetime and are cleared only when a new item would
+  overflow the budget. Transcodes contain only the audio stream: artwork,
+  chapters, and source tags are stripped before transmission.
 - Opens in the Albums view with an album grid, album detail, Songs table,
   Artists, and a Playlists overview containing Stared and user playlists. The
   Genres view is kept in the code but has no visible entry point.
@@ -35,7 +36,8 @@ queue overlay, and a 24pt status bar.
   number scrolls to that page. Searches and sorts return to page 1.
 - Built-in **Stared** playlist (backed by `songs.loved`) and user playlists.
 - Song stars and play counts are written to the project's own Tracks-compatible
-  database.
+  database. A play is counted when a new audio playback session requests the
+  stream; repeated Range requests for one playback are counted once.
 - Play queue: Up Next / History, Play Next, Play Later, Shuffle, Repeat.
 - The queue and playback position are stored in browser `localStorage` and
   restored paused after a reload.
@@ -71,7 +73,8 @@ queue overlay, and a 24pt status bar.
   - FLAC is read entirely in Python and does not need ffmpeg.
   - Tags and artwork for MP3 / M4A / WAV / AIFF / OGG / Opus are read through
     ffprobe/ffmpeg.
-  - AAC · 128 kbps is transcoded live by ffmpeg, so a working ffmpeg is needed.
+  - Configured AAC qualities are transcoded live by ffmpeg, so a working
+    ffmpeg is needed when using a transcoded format.
 
 ```bash
 python3 -m venv .venv
@@ -127,6 +130,8 @@ the built-in defaults on first run.
 | `jpeg_quality` | Album art cache JPEG quality, 15–100, default 80. |
 | `cover_size` | Maximum album art cache width/height in pixels, 16–2000, default 500. |
 | `transcode_cache_mb` | Transcode cache limit in MiB, shared across all qualities, default 512. `0` transcodes without retaining output. |
+| `audio_formats` | Ordered list of streaming formats. Each entry has `index`, `format` (`aac` or `raw`), and, for AAC, `bitrate`. The example enables only `{"index": 0, "format": "aac", "bitrate": 128}`; add `{"index": 1, "format": "aac", "bitrate": 96}` or `{"index": 2, "format": "raw"}` for more choices. |
+| `default_audio_format` | Index from `audio_formats` used when the player has no saved selection; default `0` (AAC 128 kbps). |
 | `album_sort` | Default Albums sort: `recentlyAdded`, `album`, `artist`, or `year`; defaults to `recentlyAdded`. |
 | `album_sort_descending` | Whether the default sort is descending; defaults to `true` (recently added first). |
 | `admin_password_sha1` | SHA-1 of the Setup admin password (40 hex characters). Prefer changing it from **Setup → Admin**. The development default is the single digit `1`, which hashes to `356a192b7913b04c54574d18c28d46e6395428ab`. |
@@ -156,12 +161,12 @@ library. This updates the database only and keeps the current namespace; run
 ReKey writes the new namespace back to the database, never to `config.yaml`.
 
 The transcode cache is an in-process cache keyed by song ID, quality, source
-file path, mtime, and size. Each quality keeps its own entries while sharing one
-capacity limit. Entries are retained for the lifetime of the process; when a new
-item cannot fit, the whole cache is cleared and the new item is retained. The
-cache never writes into `data/` and is naturally cleared when the server
-restarts. The status bar shows total usage and entry count, and hovering reveals
-a per-quality breakdown.
+file path, mtime, and size. Each configured AAC quality keeps its own entries
+while sharing one capacity limit; `raw` entries bypass the cache. Entries are
+retained for the lifetime of the process; when a new item cannot fit, the whole
+cache is cleared and the new item is retained. The cache never writes into
+`data/` and is naturally cleared when the server restarts. The status bar shows
+total usage and entry count, and hovering reveals a per-quality breakdown.
 
 Transcoded responses contain one audio stream only. The encoder drops attached
 artwork, video/subtitle/data streams, chapters, and all source metadata tags;
@@ -487,11 +492,12 @@ What is implemented:
 - A dark Library layout: toolbar, LCD, and an always-visible status bar. The
   top left has four icon-only section tabs (Albums / Artists / Songs /
   Playlists) and opens on Albums. There is no volume control because playback
-  volume is fixed at 100%; the waveform button selects quality (AAC · 128 kbps);
+  volume is fixed at 100%; the waveform button selects a configured audio
+  quality (default AAC · 128 kbps);
 - the status bar shows the Setup gear followed by Ready / Scanning / ReKeying
   progress, the online-client count with a globe icon, and Server Cache usage;
-- live AAC transcoding and a shared in-memory process-lifetime cache, with total usage and
-  entry count in the status bar;
+- live AAC transcoding for every configured quality and a shared in-memory
+  process-lifetime cache, with total usage and entry count in the status bar;
 - album cards, album paging, album detail, the virtualized Songs table, and a
   master-detail Artists view (the Genres view is kept in code but hidden);
 - a two-column Playlists view: Stared and playlists on the left, the selected
@@ -597,7 +603,7 @@ Coverage includes:
   that preserve stars and play counts;
 - artwork cache JPEG sizing and naming;
 - process-lifetime transcode entries, overflow clearing, zero capacity, and oversized entries;
-- `/api/quality`, `/api/cache`, AAC streaming, and HTTP Range;
+- `/api/quality`, `/api/cache`, configured audio formats, and HTTP Range;
 - Setup admin authentication, URL ID format, default album sort, password
   change/token revocation, and rejection of unauthorized scans;
 - scans using only configured directories and ignoring paths sent by the

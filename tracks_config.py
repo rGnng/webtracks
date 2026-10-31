@@ -18,6 +18,8 @@ import os
 
 import yaml
 
+from tracks_transcode import DEFAULT_AUDIO_FORMATS, build_quality_specs
+
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(PROJECT_DIR, "config.yaml")
 DATABASE_FILENAME = "library.sqlite"
@@ -33,6 +35,8 @@ DEFAULT_SETTINGS = {
     "jpeg_quality": 80,
     "cover_size": 500,
     "transcode_cache_mb": 512,
+    "audio_formats": [dict(item) for item in DEFAULT_AUDIO_FORMATS],
+    "default_audio_format": 0,
     "album_sort": "recentlyAdded",
     "album_sort_descending": True,
     "admin_password_sha1": DEFAULT_ADMIN_PASSWORD_SHA1,
@@ -108,6 +112,40 @@ def _as_nonnegative_int(value, fallback):
     except (TypeError, ValueError):
         return fallback
     return max(0, number)
+
+
+def _as_audio_formats(value):
+    if value is None:
+        value = DEFAULT_AUDIO_FORMATS
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("audio_formats must be a list")
+    specs = build_quality_specs(value)
+    return [
+        {
+            "index": spec["index"],
+            "format": spec["format"],
+            **(
+                {"bitrate": spec["bitrate"]}
+                if spec["format"] == "aac" else {}
+            ),
+        }
+        for spec in specs
+    ]
+
+
+def _as_audio_format_index(value, formats, fallback):
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        index = None
+    available = {entry["index"] for entry in formats}
+    if index is not None and index in available:
+        return index
+    if not formats:
+        return 0
+    if fallback in available:
+        return fallback
+    return formats[0]["index"]
 
 
 def _read_config(path):
@@ -288,6 +326,20 @@ def load_settings(config_path=None):
         cache_env if cache_env is not None else cache_value,
         DEFAULT_SETTINGS["transcode_cache_mb"],
     )
+    audio_formats = _as_audio_formats(
+        values.get("audio_formats", DEFAULT_SETTINGS["audio_formats"])
+    )
+    default_audio_format = _as_audio_format_index(
+        os.environ.get(
+            "WEBTRACKS_DEFAULT_AUDIO_FORMAT",
+            values.get(
+                "default_audio_format",
+                DEFAULT_SETTINGS["default_audio_format"],
+            ),
+        ),
+        audio_formats,
+        DEFAULT_SETTINGS["default_audio_format"],
+    )
     album_sort = str(
         os.environ.get(
             "WEBTRACKS_ALBUM_SORT",
@@ -405,6 +457,8 @@ def load_settings(config_path=None):
         "jpeg_quality": jpeg_quality,
         "cover_size": cover_size,
         "transcode_cache_mb": transcode_cache_mb,
+        "audio_formats": audio_formats,
+        "default_audio_format": default_audio_format,
         "album_sort": album_sort,
         "album_sort_descending": album_sort_descending,
         "admin_password_sha1": admin_password_sha1,

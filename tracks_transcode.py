@@ -1,14 +1,14 @@
 """In-memory cache for audio transcode streams.
 
-``QUALITIES`` declares the streaming formats.  AAC 128 kbps is the first one;
-additional formats (MP3 and others) can be added with their ffmpeg codec and
-container settings.  The cache is keyed by song, quality, source path, mtime,
-and size, so entries for different qualities share one byte budget.  Entries
-are kept for the lifetime of the process until a new item would exceed the
-budget; at that point the cache is cleared and the new item is retained.  Set
-``transcode_cache_mb`` in ``config.yaml`` (or ``WEBTRACKS_TRANSCODE_CACHE_MB``)
-to change the budget; 0 disables retention while still allowing on-demand
-encoding.
+``build_quality_specs`` turns the ``audio_formats`` configuration entries into
+streaming formats.  The default is AAC 128 kbps; additional AAC bitrates and a
+``raw`` entry for the original file can be configured.  The cache is keyed by
+song, quality, source path, mtime, and size, so entries for different qualities
+share one byte budget.  Entries are kept for the lifetime of the process until
+a new item would exceed the budget; at that point the cache is cleared and the
+new item is retained.  Set ``transcode_cache_mb`` in ``config.yaml`` (or
+``WEBTRACKS_TRANSCODE_CACHE_MB``) to change the budget; 0 disables retention
+while still allowing on-demand encoding.
 """
 
 from collections import OrderedDict
@@ -21,23 +21,101 @@ import threading
 
 DEFAULT_CACHE_MB = 512
 
-QUALITIES = (
-    {
-        "id": "aac128",
-        "label": "AAC",
-        "detail": "128 kbps",
-        "bitrate": 128,
-        "mime": "audio/mp4",
-        "extension": ".m4a",
-        "codec": "aac",
-        "profile": "aac_low",
-        "sample_rate": 44100,
-        "channels": 2,
-        "container": "mp4",
-        "movflags": "+faststart",
-    },
+DEFAULT_AUDIO_FORMATS = (
+    {"index": 0, "format": "aac", "bitrate": 128},
 )
 
+AUDIO_FORMAT_LABELS = {
+    "aac": "AAC",
+    "raw": "Raw",
+}
+
+
+def build_quality_specs(formats=None):
+    """Build streaming quality dictionaries from configuration entries.
+
+    Each entry has an ``index``, a ``format``, and (for AAC) a ``bitrate``.
+    ``raw`` means the original file and is never transcoded.
+    """
+
+    entries = list(DEFAULT_AUDIO_FORMATS if formats is None else formats)
+    if not entries:
+        raise ValueError("audio_formats must contain at least one entry")
+    specs = []
+    seen_indexes = set()
+    seen_ids = set()
+    for position, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                "audio_formats[%d] must be an object" % position
+            )
+        fmt = str(entry.get("format") or "").strip().lower()
+        if fmt not in AUDIO_FORMAT_LABELS:
+            raise ValueError(
+                "audio_formats[%d].format must be aac or raw" % position
+            )
+        try:
+            index = int(entry.get("index", position))
+        except (TypeError, ValueError):
+            raise ValueError(
+                "audio_formats[%d].index must be an integer" % position
+            )
+        if index < 0:
+            raise ValueError(
+                "audio_formats[%d].index must be non-negative" % position
+            )
+        if index in seen_indexes:
+            raise ValueError("duplicate audio format index %d" % index)
+        seen_indexes.add(index)
+        if fmt == "raw":
+            spec = {
+                "id": "raw",
+                "index": index,
+                "format": "raw",
+                "label": AUDIO_FORMAT_LABELS["raw"],
+                "detail": "Original",
+                "bitrate": None,
+                "mime": None,
+                "raw": True,
+            }
+        else:
+            try:
+                bitrate = int(entry.get("bitrate", 128))
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "audio_formats[%d].bitrate must be an integer"
+                    % position
+                )
+            if not 8 <= bitrate <= 512:
+                raise ValueError(
+                    "audio_formats[%d].bitrate must be between 8 and 512"
+                    % position
+                )
+            spec = {
+                "id": "%s%d" % (fmt, bitrate),
+                "index": index,
+                "format": fmt,
+                "label": AUDIO_FORMAT_LABELS[fmt],
+                "detail": "%d kbps" % bitrate,
+                "bitrate": bitrate,
+                "mime": "audio/mp4",
+                "extension": ".m4a",
+                "codec": "aac",
+                "profile": "aac_low",
+                "sample_rate": 44100,
+                "channels": 2,
+                "container": "mp4",
+                "movflags": "+faststart",
+                "raw": False,
+            }
+        if spec["id"] in seen_ids:
+            raise ValueError("duplicate audio quality %s" % spec["id"])
+        seen_ids.add(spec["id"])
+        specs.append(spec)
+    return tuple(specs)
+
+
+QUALITIES = build_quality_specs(DEFAULT_AUDIO_FORMATS)
 DEFAULT_QUALITY = QUALITIES[0]["id"]
 QUALITY_BY_ID = {quality["id"]: quality for quality in QUALITIES}
 
@@ -50,9 +128,16 @@ class TranscodeCache:
     """Thread-safe, size-limited process-lifetime cache of audio bytes."""
 
     def __init__(self, max_bytes=DEFAULT_CACHE_MB * 1024 * 1024,
-                 ffmpeg=None, encode_workers=2):
+                 ffmpeg=None, encode_workers=2, qualities=None):
         self.max_bytes = max(0, int(max_bytes))
         self.ffmpeg = ffmpeg or shutil.which("ffmpeg") or "ffmpeg"
+        specs = QUALITIES if qualities is None else tuple(qualities)
+        self.qualities = tuple(
+            spec for spec in specs if not spec.get("raw")
+        )
+        self.quality_by_id = {
+            spec["id"]: spec for spec in self.qualities
+        }
         self._cache = OrderedDict()
         self._keys = {}
         self._lock = threading.RLock()
@@ -77,7 +162,7 @@ class TranscodeCache:
                     "entries": 0,
                     "usedBytes": 0,
                 }
-                for quality in QUALITIES
+                for quality in self.qualities
             }
             for key, (data, _etag) in self._cache.items():
                 bucket = by_quality.get(key[1])
@@ -96,8 +181,12 @@ class TranscodeCache:
                 "qualities": list(by_quality.values()),
             }
 
-    def get_or_encode(self, song_id, source_path, quality=DEFAULT_QUALITY):
-        if quality not in QUALITY_BY_ID:
+    def get_or_encode(self, song_id, source_path, quality=None):
+        if quality is None:
+            if not self.qualities:
+                raise ValueError("No transcoding formats are configured")
+            quality = self.qualities[0]["id"]
+        if quality not in self.quality_by_id:
             raise ValueError("Unsupported quality: %s" % quality)
         try:
             stat = os.stat(source_path)
@@ -158,7 +247,7 @@ class TranscodeCache:
         self._used_bytes = 0
 
     def _encode(self, source_path, quality):
-        spec = QUALITY_BY_ID[quality]
+        spec = self.quality_by_id[quality]
         if not self.ffmpeg or not (
             os.path.isabs(self.ffmpeg) and os.path.exists(self.ffmpeg)
             or shutil.which(self.ffmpeg)

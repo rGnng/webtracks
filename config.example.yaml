@@ -27,6 +27,18 @@ jpeg_quality: 80
 # 0 transcodes without retaining output.
 transcode_cache_mb: 512
 
+# Audio streaming formats. `index` identifies the format and
+# `default_audio_format` selects the default entry. Currently only AAC is
+# implemented; add {"index": 1, "format": "aac", "bitrate": 96} for AAC 96
+# kbps, or {"index": 2, "format": "raw"} to allow the original file.
+audio_formats:
+  - index: 0
+    format: aac
+    bitrate: 128
+
+# Index from audio_formats used by default.
+default_audio_format: 0
+
 # Default Albums sort: recentlyAdded, album, artist, or year.
 album_sort: recentlyAdded
 album_sort_descending: true

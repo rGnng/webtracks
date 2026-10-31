@@ -145,6 +145,30 @@ class TranscodeQualityTests(unittest.TestCase):
         self.assertEqual(cache["qualities"][0]["id"], DEFAULT_QUALITY)
         self.assertEqual(cache["qualities"][0]["entries"], 0)
 
+    def test_configured_quality_default_and_raw(self):
+        from server import Config, create_app
+
+        app = create_app(
+            Config(
+                self.db_path,
+                os.path.join(self.root, "Artwork2"),
+                audio_formats=[
+                    {"index": 0, "format": "aac", "bitrate": 128},
+                    {"index": 1, "format": "aac", "bitrate": 96},
+                    {"index": 2, "format": "raw"},
+                ],
+                default_audio_format=1,
+            )
+        )
+        payload = app.test_client().get("/api/quality").get_json()
+        self.assertEqual(payload["default"], "aac96")
+        self.assertEqual(
+            [quality["id"] for quality in payload["qualities"]],
+            ["aac128", "aac96", "raw"],
+        )
+        self.assertEqual(payload["qualities"][1]["bitrate"], 96)
+        self.assertTrue(payload["qualities"][2]["raw"])
+
     def test_aac_streaming_and_range(self):
         if not shutil.which("ffmpeg"):
             self.skipTest("ffmpeg is required for AAC encoding")
