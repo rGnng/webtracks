@@ -3,16 +3,18 @@
 
 The SQLite schema and artwork cache layout match the macOS Tracks app, but the
 database and cache belong to this project.  They are created under ``data/``
-next to ``server.py`` (see ``config.json``) and are never shared with the
+next to ``server.py`` (see ``config.yaml``) and are never shared with the
 native app.  All web assets are served locally; the page makes no external
 requests.
 """
 
 import argparse
+import datetime
 import gzip
 import hashlib
 import hmac
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -33,19 +35,24 @@ from tracks_transcode import (
     TranscodeError,
 )
 from tracks_config import (
+    ALBUM_SORT_KEYS,
     DEFAULT_ADMIN_PASSWORD_SHA1,
     DEFAULT_CONFIG_PATH,
     ensure_config_file,
     load_settings,
-    save_libraries_to_config,
+    update_config,
 )
 from tracks_db import (
     LibraryCatalog,
     LibraryDB,
     ReadOnlyError,
 )
-from tracks_identity import canonical_path
+from tracks_identity import canonical_path, normalize_identifier
+from tracks_logging import configure_logging
 from tracks_scanner import DEFAULT_JPEG_QUALITY, scan_one
+
+runtime_log = logging.getLogger("webtracks.runtime")
+operation_log = logging.getLogger("webtracks.operations")
 
 UUID_RE = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
@@ -70,7 +77,8 @@ class Config:
     def __init__(self, database, artwork, read_only=False, jpeg_quality=None,
                  music_dirs=None, config_path=None, transcode_cache_mb=None,
                  album_sort=None, album_sort_descending=None,
-                 admin_password_sha1=None, libraries=None):
+                 admin_password_sha1=None, libraries=None,
+                 logs_dir=None, log_level=None, url_id_format=None):
         self.database = os.path.abspath(os.path.expanduser(database))
         self.artwork = os.path.abspath(os.path.expanduser(artwork))
         self.read_only = bool(read_only)
@@ -84,10 +92,9 @@ class Config:
             ]
         self.libraries = []
         for library in libraries:
+            path = library if isinstance(library, str) else library.get("path")
             self.libraries.append({
-                "identifier": library.get("identifier"),
-                "namespace": library.get("namespace"),
-                "path": os.path.realpath(os.path.expanduser(library["path"])),
+                "path": os.path.realpath(os.path.expanduser(path)),
             })
         self.music_dirs = [library["path"] for library in self.libraries]
         self.config_path = config_path
@@ -106,6 +113,16 @@ class Config:
         self.admin_password_sha1 = str(
             admin_password_sha1 or DEFAULT_ADMIN_PASSWORD_SHA1
         ).strip().lower()
+        self.logs_dir = (
+            os.path.abspath(os.path.expanduser(logs_dir))
+            if logs_dir else None
+        )
+        self.log_level = str(log_level or "INFO").upper()
+        self.url_id_format = (
+            str(url_id_format or "uuid").strip().lower()
+        )
+        if self.url_id_format not in ("uuid", "base64url"):
+            self.url_id_format = "uuid"
 
     @classmethod
     def from_settings(cls, settings):
@@ -121,6 +138,9 @@ class Config:
             album_sort=settings.get("album_sort"),
             album_sort_descending=settings.get("album_sort_descending"),
             admin_password_sha1=settings.get("admin_password_sha1"),
+            logs_dir=settings.get("logs_dir"),
+            log_level=settings.get("log_level"),
+            url_id_format=settings.get("url_id_format"),
         )
 
 
@@ -192,31 +212,42 @@ class AdminAuth:
         with self._lock:
             self._tokens.pop(token, None)
 
+    def set_password_sha1(self, password_sha1):
+        self.password_sha1 = str(password_sha1 or "").strip().lower()
+        with self._lock:
+            self._tokens.clear()
 
-def _configured_scan_roots(config, db=None):
-    """Return only libraries explicitly listed in config.libraries."""
 
-    libraries = config.libraries or []
-    if not libraries:
-        return []
+def _seed_library_paths(config, db):
+    """Import legacy config paths into the database.
+
+    Library folders, identifiers, and namespaces live in ``library.sqlite``.
+    Old configs may still contain ``libraries`` or ``music_dirs``; those paths
+    are imported once so existing installations keep working, but the
+    configuration file is not the runtime source of truth.
+    """
+
+    if not config.read_only and config.libraries:
+        db.sync_libraries(config.libraries)
+
+
+def _database_scan_roots(config, db=None):
+    """Return every enabled library stored in the database."""
+
     if db is None:
         db = LibraryDB(config.database, read_only=True)
-    stored = {
-        canonical_path(library["path"]): library
-        for library in db.load_libraries()
-    }
     roots = []
-    for configured in libraries:
-        root = canonical_path(configured["path"])
-        library = stored.get(root) or {}
+    for library in db.load_libraries():
+        if not library.get("enabled", True):
+            continue
+        root = canonical_path(library["path"])
         roots.append({
+            "id": library.get("id"),
             "root": root,
             "path": root,
             "name": library.get("name") or os.path.basename(root),
-            "identifier": (configured.get("identifier")
-                           or library.get("identifier")),
-            "namespace": (configured.get("namespace")
-                          or library.get("id_namespace")),
+            "identifier": library.get("identifier"),
+            "namespace": library.get("id_namespace"),
         })
     return roots
 
@@ -297,23 +328,28 @@ class ScanManager:
             }
 
         db = LibraryDB(self.config.database, read_only=False)
-        if self.config.libraries:
-            db.sync_libraries(self.config.libraries)
+        _seed_library_paths(self.config, db)
         mode = payload.get("mode") or "quick"
         if mode not in ("quick", "full"):
             mode = "quick"
         prune = bool(payload.get("prune"))
         force = bool(payload.get("force"))
-        roots = _configured_scan_roots(self.config, db)
+        roots = _database_scan_roots(self.config, db)
         if not roots:
             with self.lock:
                 self.job["running"] = False
                 self.job["phase"] = "Error"
-                self.job["message"] = "No libraries configured"
+                self.job["message"] = "No libraries in the database"
             raise ValueError(
-                "No libraries are configured. Add them to "
-                "libraries in config.json."
+                "No libraries are in the database. Add one with "
+                "`python3 server.py scan --root PATH`."
             )
+
+        runtime_log.info(
+            "Scan starting; mode=%s force=%s prune=%s libraries=%s",
+            mode, force, prune,
+            [entry["root"] for entry in roots],
+        )
 
         def run():
             summaries = []
@@ -352,8 +388,16 @@ class ScanManager:
                     errors=errors,
                 )
                 self.catalog.reload()
+                runtime_log.info(
+                    "Scan complete; tracks=%s artwork=%s discovered=%s "
+                    "missing=%s errors=%s",
+                    summary["tracks"], summary["artwork"],
+                    summary["discovered"], summary["missing"],
+                    len(errors),
+                )
             except Exception as exc:
                 errors.append(str(exc))
+                runtime_log.exception("Scan failed")
                 self._update(
                     phase="Error",
                     message=str(exc),
@@ -415,6 +459,7 @@ class RekeyManager:
                 "finishedAt": None,
                 "summary": None,
             }
+        runtime_log.info("ReKey starting")
         thread = threading.Thread(
             target=self._run, name="webtracks-rekey", daemon=True
         )
@@ -426,52 +471,15 @@ class RekeyManager:
         summary = None
         try:
             db = LibraryDB(self.config.database, read_only=False)
-            synced = db.sync_libraries(self.config.libraries)
-            stored_by_path = {
-                canonical_path(library["path"]): library
-                for library in synced
-            }
-            identifiers_by_path = {}
-            config_entries = []
-            for library in self.config.libraries:
-                path = canonical_path(library["path"])
-                stored = stored_by_path.get(path, {})
-                identifier = library.get("identifier") or stored.get("identifier")
-                if identifier is None:
-                    raise ValueError(
-                        "Library identifier is missing: %s" % path
-                    )
-                identifiers_by_path[path] = identifier
-                config_entries.append({
-                    "identifier": identifier,
-                    "namespace": (library.get("namespace")
-                                  or stored.get("id_namespace")),
-                    "path": path,
-                })
+            _seed_library_paths(self.config, db)
             self._update(
                 phase="Rekeying database",
                 message="Recalculating song, album, and artist IDs",
             )
-            result = db.rekey_libraries(identifiers_by_path)
-            namespaces = result.get("namespaceByPath") or {}
-            updated_entries = []
-            for entry in config_entries:
-                updated_entries.append({
-                    "identifier": entry["identifier"],
-                    "namespace": namespaces.get(
-                        entry["path"], entry["namespace"]
-                    ),
-                    "path": entry["path"],
-                })
-            if self.config.config_path and updated_entries:
-                self._update(
-                    phase="Updating configuration",
-                    message="Writing the new library namespaces to config.json",
-                )
-                save_libraries_to_config(
-                    self.config.config_path, updated_entries
-                )
-                self.config.libraries = updated_entries
+            # Library identifiers and namespaces are database state. ReKey
+            # reads the identifier from each row and writes the new namespace
+            # back to the same row; config.yaml only stores folder paths.
+            result = db.rekey_libraries()
             self._update(
                 phase="Updating artwork cache",
                 message="Moving cached artwork to the new album IDs",
@@ -496,8 +504,15 @@ class RekeyManager:
                 message="ReKey complete",
                 summary=summary,
             )
+            runtime_log.info(
+                "ReKey complete; songs=%s albums=%s artists=%s artwork=%s "
+                "backup=%s",
+                summary["songs"], summary["albums"], summary["artists"],
+                summary["artwork"], summary["backup"],
+            )
         except Exception as exc:
             errors.append(str(exc))
+            runtime_log.exception("ReKey failed")
             self._update(
                 phase="Error",
                 message=str(exc),
@@ -530,6 +545,28 @@ def _json_response(payload, status=200):
 
 def _error(message, status=400):
     return _json_response({"error": message}, status=status)
+
+
+def _log_operation(action, result="ok", **details):
+    if not operation_log.handlers:
+        return
+    forwarded = (request.headers.get("X-Forwarded-For") or "").strip()
+    payload = {
+        "time": datetime.datetime.now().astimezone().isoformat(
+            timespec="seconds"
+        ),
+        "action": action,
+        "result": result,
+        "remoteIp": request.remote_addr or "",
+        "forwardedFor": forwarded,
+        "userAgent": request.headers.get("User-Agent") or "",
+        "method": request.method,
+        "path": request.path,
+    }
+    payload.update(details)
+    operation_log.info(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    )
 
 
 def _byte_range_response(data, mimetype, etag):
@@ -616,7 +653,7 @@ def create_app(config):
     app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
     catalog = LibraryCatalog(config.database, read_only=config.read_only)
     if not config.read_only and config.libraries:
-        catalog.db.sync_libraries(config.libraries)
+        _seed_library_paths(config, catalog.db)
         catalog.reload()
     scans = ScanManager(config, catalog)
     rekeys = RekeyManager(config, catalog)
@@ -655,6 +692,11 @@ def create_app(config):
         )
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Frame-Options", "DENY")
+        if response.status_code >= 500:
+            runtime_log.error(
+                "HTTP %s %s -> %s", request.method, request.path,
+                response.status_code,
+            )
         return response
 
     @app.get("/")
@@ -665,10 +707,13 @@ def create_app(config):
     def api_bootstrap():
         try:
             payload = catalog.bootstrap_payload()
-            payload["musicDirs"] = list(config.music_dirs)
+            payload["musicDirs"] = [
+                library["path"] for library in payload.get("libraries") or []
+            ]
             payload["database"] = config.database
             payload["albumSort"] = config.album_sort
             payload["albumSortDescending"] = config.album_sort_descending
+            payload["urlIdFormat"] = config.url_id_format
             return _json_response(payload)
         except Exception as exc:
             return _error("Could not read the library: %s" % exc, 500)
@@ -714,6 +759,10 @@ def create_app(config):
         body = request.get_json(silent=True) or {}
         try:
             playlist = catalog.create_playlist(body.get("name", ""))
+            _log_operation(
+                "playlist_created", "success", actor="admin",
+                playlistId=playlist["id"], playlistName=playlist["name"],
+            )
             return _json_response({"playlist": playlist}, status=201)
         except ReadOnlyError as exc:
             return _error(str(exc), 403)
@@ -723,9 +772,18 @@ def create_app(config):
     @app.patch("/api/playlists/<playlist_id>")
     def api_rename_playlist(playlist_id):
         body = request.get_json(silent=True) or {}
+        before = catalog.playlist_by_id.get(playlist_id) or {}
         try:
             playlist = catalog.rename_playlist(
                 playlist_id, body.get("name", "")
+            )
+            _log_operation(
+                "playlist_renamed", "success",
+                actor=("admin" if admin_auth.is_authenticated(_admin_token())
+                       else "anonymous"),
+                playlistId=playlist_id,
+                oldName=before.get("name"),
+                newName=playlist["name"],
             )
             return _json_response({"playlist": playlist})
         except ReadOnlyError as exc:
@@ -737,8 +795,16 @@ def create_app(config):
 
     @app.delete("/api/playlists/<playlist_id>")
     def api_delete_playlist(playlist_id):
+        before = catalog.playlist_by_id.get(playlist_id) or {}
         try:
             catalog.delete_playlist(playlist_id)
+            _log_operation(
+                "playlist_deleted", "success",
+                actor=("admin" if admin_auth.is_authenticated(_admin_token())
+                       else "anonymous"),
+                playlistId=playlist_id,
+                playlistName=before.get("name"),
+            )
             return _json_response({"deleted": True})
         except ReadOnlyError as exc:
             return _error(str(exc), 403)
@@ -755,6 +821,14 @@ def create_app(config):
             return _error("songIds must be a list", 400)
         try:
             added = catalog.add_to_playlist(playlist_id, song_ids)
+            _log_operation(
+                "playlist_songs_added", "success",
+                actor=("admin" if admin_auth.is_authenticated(_admin_token())
+                       else "anonymous"),
+                playlistId=playlist_id,
+                requested=len(song_ids),
+                added=added,
+            )
             return _json_response({
                 "added": added,
                 "playlist": catalog.playlist_payload(playlist_id),
@@ -772,6 +846,14 @@ def create_app(config):
             return _error("songIds must be a list", 400)
         try:
             removed = catalog.remove_from_playlist(playlist_id, song_ids)
+            _log_operation(
+                "playlist_songs_removed", "success",
+                actor=("admin" if admin_auth.is_authenticated(_admin_token())
+                       else "anonymous"),
+                playlistId=playlist_id,
+                requested=len(song_ids),
+                removed=removed,
+            )
             return _json_response({
                 "removed": removed,
                 "playlist": catalog.playlist_payload(playlist_id),
@@ -892,22 +974,93 @@ def create_app(config):
 
     @app.get("/api/setup")
     def api_setup():
-        configured = _configured_scan_roots(config)
+        configured = _database_scan_roots(config)
+        authenticated = admin_auth.is_authenticated(_admin_token())
+        libraries = []
+        for item in configured:
+            entry = {
+                "id": item.get("id"),
+                "name": item["name"],
+                "identifier": item["identifier"],
+                "namespace": item["namespace"],
+            }
+            if authenticated:
+                entry["path"] = item["path"]
+            libraries.append(entry)
         return _json_response({
             "name": "Setup",
-            "authenticated": admin_auth.is_authenticated(_admin_token()),
-            "libraries": [
-                {
-                    "name": item["name"],
-                    "path": item["path"],
-                    "identifier": item["identifier"],
-                    "namespace": item["namespace"],
-                }
-                for item in configured
-            ],
+            "authenticated": authenticated,
+            "libraries": libraries,
             "readOnly": config.read_only,
+            "urlIdFormat": config.url_id_format,
+            "albumSort": config.album_sort,
+            "albumSortDescending": config.album_sort_descending,
             "scan": scans.snapshot(),
             "rekey": rekeys.snapshot(),
+        })
+
+    @app.patch("/api/setup/library")
+    def api_setup_library():
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
+        if config.read_only:
+            return _error("The server is running in read-only mode", 403)
+        if scans.snapshot().get("running"):
+            return _error("A scan is already running", 409)
+        if rekeys.snapshot().get("running"):
+            return _error("A ReKey is already running", 409)
+        body = request.get_json(silent=True) or {}
+        root = canonical_path(body.get("path") or "")
+        identifier = str(body.get("identifier") or "").strip()
+        if not identifier:
+            return _error("Library identifier must not be empty", 400)
+        if any(ord(char) < 32 or ord(char) == 127 for char in identifier):
+            return _error(
+                "Library identifier contains control characters", 400
+            )
+        key = normalize_identifier(identifier)
+        db = LibraryDB(config.database, read_only=False)
+        libraries = db.load_libraries()
+        target = next(
+            (
+                library for library in libraries
+                if canonical_path(library["path"]) == root
+            ),
+            None,
+        )
+        if target is None:
+            return _error("Library not found in the database", 404)
+        for library in libraries:
+            if canonical_path(library["path"]) == root:
+                continue
+            for value in (library.get("identifier"),
+                          library.get("id_namespace")):
+                if value and normalize_identifier(value) == key:
+                    return _error(
+                        "Library identifier/namespace is already in use", 409
+                    )
+        try:
+            updated = db.set_library_identifier(root, identifier)
+        except ValueError as exc:
+            return _error(str(exc), 409)
+        catalog.reload()
+        namespace = normalize_identifier(updated.get("id_namespace") or "")
+        _log_operation(
+            "library_identifier_changed",
+            "success",
+            path=target["path"],
+            oldIdentifier=target.get("identifier"),
+            newIdentifier=identifier,
+            rekeyRequired=key != namespace,
+        )
+        return _json_response({
+            "library": {
+                "identifier": updated["identifier"],
+                "namespace": updated["id_namespace"],
+                "path": updated["path"],
+            },
+            "rekeyRequired": key != namespace,
         })
 
     @app.post("/api/setup/login")
@@ -915,7 +1068,9 @@ def create_app(config):
         body = request.get_json(silent=True) or {}
         token = admin_auth.authenticate(body.get("password"))
         if not token:
+            _log_operation("admin_login", "failure", reason="invalid_password")
             return _error("Incorrect admin password", 401)
+        _log_operation("admin_login", "success")
         return _json_response({
             "authenticated": True,
             "token": token,
@@ -924,8 +1079,99 @@ def create_app(config):
 
     @app.post("/api/setup/logout")
     def api_setup_logout():
+        _log_operation("admin_logout", "success")
         admin_auth.revoke(_admin_token())
         return _json_response({"authenticated": False})
+
+    @app.patch("/api/setup/settings")
+    def api_setup_settings():
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
+        body = request.get_json(silent=True) or {}
+        updates = {}
+        url_format = None
+        if "urlIdFormat" in body:
+            url_format = str(body.get("urlIdFormat") or "").strip().lower()
+            if url_format not in ("uuid", "base64url"):
+                return _error("urlIdFormat must be uuid or base64url", 400)
+            updates["url_id_format"] = url_format
+        album_sort = None
+        if "albumSort" in body:
+            album_sort = str(body.get("albumSort") or "").strip()
+            if album_sort not in ALBUM_SORT_KEYS:
+                return _error("albumSort is not supported", 400)
+            updates["album_sort"] = album_sort
+        album_sort_descending = None
+        if "albumSortDescending" in body:
+            album_sort_descending = body.get("albumSortDescending")
+            if not isinstance(album_sort_descending, bool):
+                return _error("albumSortDescending must be a boolean", 400)
+            updates["album_sort_descending"] = album_sort_descending
+        if not updates:
+            return _error("No settings were provided", 400)
+        if not config.config_path:
+            return _error("The configuration file is not available", 400)
+
+        previous_url_format = config.url_id_format
+        previous_album_sort = config.album_sort
+        previous_album_sort_descending = config.album_sort_descending
+        try:
+            update_config(config.config_path, **updates)
+        except Exception as exc:
+            return _error("Could not update config.yaml: %s" % exc, 500)
+        if url_format is not None:
+            config.url_id_format = url_format
+        if album_sort is not None:
+            config.album_sort = album_sort
+        if album_sort_descending is not None:
+            config.album_sort_descending = album_sort_descending
+        if url_format is not None:
+            _log_operation(
+                "url_id_format_changed", "success", actor="admin",
+                oldValue=previous_url_format, newValue=url_format,
+            )
+        if album_sort is not None or album_sort_descending is not None:
+            _log_operation(
+                "album_sort_changed", "success", actor="admin",
+                oldSort=previous_album_sort,
+                newSort=config.album_sort,
+                oldDescending=previous_album_sort_descending,
+                newDescending=config.album_sort_descending,
+            )
+        return _json_response({
+            "urlIdFormat": config.url_id_format,
+            "albumSort": config.album_sort,
+            "albumSortDescending": config.album_sort_descending,
+        })
+
+    @app.post("/api/setup/password")
+    def api_setup_password():
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
+        body = request.get_json(silent=True) or {}
+        password = str(body.get("newPassword") or "")
+        if not password:
+            return _error("New password must not be empty", 400)
+        if len(password) > 1024:
+            return _error("New password is too long", 400)
+        if not config.config_path:
+            return _error("The configuration file is not available", 400)
+        digest = hashlib.sha1(password.encode("utf-8")).hexdigest()
+        try:
+            update_config(
+                config.config_path, admin_password_sha1=digest
+            )
+        except Exception as exc:
+            return _error("Could not update config.yaml: %s" % exc, 500)
+        config.admin_password_sha1 = digest
+        admin_auth.set_password_sha1(digest)
+        _log_operation("admin_password_changed", "success", actor="admin")
+        return _json_response({
+            "changed": True,
+            "reauthenticate": True,
+        })
 
     @app.post("/api/setup/scan")
     def api_setup_scan():
@@ -945,6 +1191,10 @@ def create_app(config):
                 "force": force,
                 "prune": False,
             })
+            _log_operation(
+                "scan_started", "success", actor="admin",
+                mode=mode, force=force
+            )
             return _json_response({"job": job}, status=202)
         except ReadOnlyError as exc:
             return _error(str(exc), 403)
@@ -962,6 +1212,7 @@ def create_app(config):
             return _error("A scan is already running", 409)
         try:
             job = rekeys.start()
+            _log_operation("rekey_started", "success", actor="admin")
             return _json_response({"job": job}, status=202)
         except ReadOnlyError as exc:
             return _error(str(exc), 403)
@@ -991,6 +1242,13 @@ def create_app(config):
                 "force": bool(body.get("force")),
                 "prune": bool(body.get("prune")),
             })
+            _log_operation(
+                "scan_started",
+                "success",
+                actor="admin",
+                mode=body.get("mode") or "quick",
+                force=bool(body.get("force")),
+            )
             return _json_response({"job": job}, status=202)
         except ReadOnlyError as exc:
             return _error(str(exc), 403)
@@ -1094,7 +1352,7 @@ def main(argv=None):
     parser.add_argument(
         "--config", default=os.environ.get("WEBTRACKS_CONFIG",
                                           DEFAULT_CONFIG_PATH),
-        help="path to config.json (default: next to server.py)",
+        help="path to config.yaml (default: next to server.py)",
     )
     parser.add_argument(
         "--database", default=None,
@@ -1177,6 +1435,9 @@ def main(argv=None):
         album_sort=settings["album_sort"],
         album_sort_descending=settings["album_sort_descending"],
         admin_password_sha1=settings["admin_password_sha1"],
+        logs_dir=settings["logs_dir"],
+        log_level=settings["log_level"],
+        url_id_format=settings["url_id_format"],
     )
     host = args.host or settings["host"]
     port = args.port or settings["port"]
@@ -1190,9 +1451,8 @@ def main(argv=None):
         print("  config:   %s" % config.config_path)
         print("  database: %s" % config.database)
         print("  artwork:  %s" % config.artwork)
-        print("Created an empty library. Add libraries to "
-              "config.json, then run:")
-        print("  python3 server.py scan")
+        print("Created an empty library. Add a music folder with:")
+        print('  python3 server.py scan --root "/path/to/Music"')
         return 0
 
     if args.command == "scan":
@@ -1207,17 +1467,12 @@ def main(argv=None):
                 "identifier": args.identifier,
             })
         else:
-            if not config.libraries:
-                parser.error(
-                    "no libraries configured; add them to libraries in %s"
-                    % config.config_path
-                )
-            db.sync_libraries(config.libraries)
-            roots = _configured_scan_roots(config, db)
+            _seed_library_paths(config, db)
+            roots = _database_scan_roots(config, db)
             if not roots:
                 parser.error(
-                    "no libraries configured; add them to libraries in %s"
-                    % config.config_path
+                    "no libraries are in the database; add one with "
+                    "`python3 server.py scan --root PATH`"
                 )
         summaries = []
         try:
@@ -1268,22 +1523,36 @@ def main(argv=None):
             "until ffmpeg is installed.",
             file=sys.stderr,
         )
+    if config.logs_dir:
+        configure_logging(config.logs_dir, config.log_level)
+        runtime_log.info(
+            "WebTracks starting; config=%s database=%s artwork=%s logs=%s",
+            config.config_path, config.database, config.artwork,
+            config.logs_dir,
+        )
     app = create_app(config)
     print("WebTracks")
     print("  config:   %s" % config.config_path)
     print("  database: %s" % config.database)
     print("  artwork:  %s" % config.artwork)
-    if config.libraries:
-        for library in config.libraries:
-            print("  library:  %s [%s] %s" % (
-                library.get("identifier") or "?",
-                library.get("namespace") or "?",
-                library.get("path"),
-            ))
+    try:
+        libraries = LibraryDB(
+            config.database, read_only=True
+        ).load_libraries()
+    except Exception:
+        libraries = []
+    for library in libraries:
+        print("  library:  %s [%s] %s" % (
+            library.get("identifier") or "?",
+            library.get("id_namespace") or "?",
+            library.get("path"),
+        ))
     print("  mode:     %s" % (
         "read-only" if config.read_only else "read/write"
     ))
     print("  transcode cache: %d MiB (memory)" % config.transcode_cache_mb)
+    if config.logs_dir:
+        print("  logs:     %s (%s)" % (config.logs_dir, config.log_level))
     print("  listening: http://%s:%d" % (host, port))
     app.run(
         host=host,

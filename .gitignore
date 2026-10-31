@@ -8,3 +8,7 @@ config.local.json
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+# Local configuration; copy config.example.yaml instead.
+config.yaml
+config.local.yaml
+logs/

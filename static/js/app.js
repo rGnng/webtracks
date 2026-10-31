@@ -53,6 +53,7 @@
     albumSort: "recentlyAdded",
     albumSortAsc: false,
     albumSortInitialized: false,
+    urlIdFormat: "uuid",
     songSorts: {},
     audioQuality: "aac128",
     songRows: [],
@@ -82,6 +83,7 @@
     confirmCallback: null,
     browserListVirtual: null,
     playlistDialog: null,
+    libraryIdTarget: null,
     addToPlaylistIds: [],
     lastPersistAt: 0,
     doneInitialLoad: false,
@@ -448,16 +450,30 @@
     return null;
   }
 
+  function encodeUrlId(identifier) {
+    if (state.urlIdFormat !== "base64url") return identifier;
+    const hex = String(identifier || "").replace(/-/g, "");
+    if (!/^[0-9a-fA-F]{32}$/.test(hex)) return identifier;
+    const bytes = new Uint8Array(16);
+    for (let index = 0; index < 16; index += 1) {
+      bytes[index] = parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+    }
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_")
+      .replace(/=+$/g, "");
+  }
+
   function albumRoute(albumId) {
-    return `#/album/${encodeURIComponent(albumId)}`;
+    return `#/album/${encodeURIComponent(encodeUrlId(albumId))}`;
   }
 
   function songRoute(songId) {
-    return `#/song/${encodeURIComponent(songId)}`;
+    return `#/song/${encodeURIComponent(encodeUrlId(songId))}`;
   }
 
   function playlistRoute(playlistId) {
-    return `#/playlist/${encodeURIComponent(playlistId)}`;
+    return `#/playlist/${encodeURIComponent(encodeUrlId(playlistId))}`;
   }
 
   function artistRoute(name) {
@@ -970,6 +986,9 @@
         state.albumSortAsc = !data.albumSortDescending;
       }
       state.albumSortInitialized = true;
+    }
+    if (data && ["uuid", "base64url"].includes(data.urlIdFormat)) {
+      state.urlIdFormat = data.urlIdFormat;
     }
     state.albumMap = new Map(state.albums.map((album) => [album.id, album]));
     if (state.section === "playlist" && !state.playlists.some((p) => p.id === state.playlistId)) {
@@ -3919,6 +3938,7 @@
     state.modalMode = null;
     state.confirmCallback = null;
     state.playlistDialog = null;
+    state.libraryIdTarget = null;
     state.addToPlaylistIds = [];
     state.addToPlaylistSongs = [];
     el.modalRoot.classList.add("hidden");
@@ -3998,21 +4018,45 @@
     if (!state.adminAuthenticated) setAdminToken("");
     if (info && info.scan) state.scanJob = info.scan;
     if (info && info.rekey) state.rekeyJob = info.rekey;
+    if (info && ["uuid", "base64url"].includes(info.urlIdFormat)) {
+      state.urlIdFormat = info.urlIdFormat;
+    }
+    if (info && ALBUM_SORT_KEYS.includes(info.albumSort)) {
+      state.albumSort = info.albumSort;
+    }
+    if (info && typeof info.albumSortDescending === "boolean") {
+      state.albumSortAsc = !info.albumSortDescending;
+    }
   }
 
-  function setupLibrariesHtml() {
+  function setupLibrariesHtml(canEdit, showPath) {
     const libraries = (state.setupInfo && state.setupInfo.libraries) || [];
     if (!libraries.length) {
-      return `<div class="field-help">No music folders are configured in config.json.</div>`;
+      return `<div class="field-help">No libraries are in the database. Add one with
+        <code>python3 server.py scan --root PATH</code>.</div>`;
     }
     return `<div class="setup-libraries">${libraries.map((library) => `
       <div class="setup-library">
-        <div class="setup-library-name">${esc(library.name || library.path)}</div>
-        <div class="setup-library-path">${esc(library.path || "")}</div>
-        <div class="setup-library-namespace">
-          identifier: ${esc(library.identifier || "—")}
-          · namespace: ${esc(library.namespace || "—")}
+        <div class="setup-library-head">
+          <div class="setup-library-title">
+            <span class="setup-library-name">${esc(
+              library.identifier || library.name || library.path || "—"
+            )}</span>
+            <span class="setup-library-namespace">current namespace: ${esc(
+              library.namespace || "—"
+            )}</span>
+          </div>
+          <button class="setup-library-edit" type="button"
+                  data-action="edit-library-id"
+                  data-path="${esc(library.path || "")}"
+                  title="${canEdit ? "Change Library ID" : "Log in to change the Library ID"}"
+                  aria-label="Change Library ID" ${canEdit ? "" : "disabled"}>
+            ${icon("pencil")}
+          </button>
         </div>
+        ${showPath && library.path
+          ? `<div class="setup-library-path">${esc(library.path)}</div>`
+          : ""}
       </div>`).join("")}</div>`;
   }
 
@@ -4049,6 +4093,76 @@
     const busy = Boolean(scan.running || rekey.running);
     const enabled = state.adminAuthenticated && !readOnly && !busy;
     const disabled = enabled ? "" : "disabled";
+    const settingsEnabled = state.adminAuthenticated && !readOnly;
+    const settingsDisabled = settingsEnabled ? "" : "disabled";
+    const urlIdFormat = ["uuid", "base64url"].includes(info.urlIdFormat)
+      ? info.urlIdFormat : state.urlIdFormat;
+    const albumSort = ALBUM_SORT_KEYS.includes(info.albumSort)
+      ? info.albumSort : state.albumSort;
+    const albumSortDescending =
+      typeof info.albumSortDescending === "boolean"
+        ? info.albumSortDescending : !state.albumSortAsc;
+    const sortOptions = [
+      ["recentlyAdded", "Recently Added"],
+      ["album", "Album Name"],
+      ["artist", "Artist"],
+      ["year", "Year"],
+    ].map(([value, label]) => `<option value="${value}"`
+      + `${albumSort === value ? " selected" : ""}>${label}</option>`).join("");
+    const passwordHtml = state.adminAuthenticated
+      ? `<div class="setup-password-block">
+           <div class="field-label">Change admin password</div>
+           <div class="setup-password-grid">
+             <input id="setup-new-password" class="text-input" type="password"
+                    autocomplete="new-password" spellcheck="false"
+                    placeholder="New password" aria-label="New admin password">
+             <input id="setup-confirm-password" class="text-input"
+                    type="password" autocomplete="new-password" spellcheck="false"
+                    placeholder="Confirm new password"
+                    aria-label="Confirm new admin password">
+             <button class="secondary-button" type="button"
+                     data-action="setup-change-password" ${settingsDisabled}>
+               Change Password
+             </button>
+           </div>
+         </div>`
+      : "";
+    const settingsHtml = `
+      <div class="setup-section">
+        <div class="field-label">Settings</div>
+        <div class="setup-setting-row">
+          <label class="field-label" for="setup-url-format">URL ID format</label>
+          <select id="setup-url-format" class="select-input"
+                  aria-label="URL ID format" ${settingsDisabled}>
+            <option value="uuid"${urlIdFormat === "uuid" ? " selected" : ""}>UUID</option>
+            <option value="base64url"${urlIdFormat === "base64url" ? " selected" : ""}>URL-safe Base64</option>
+          </select>
+        </div>
+        <div class="setup-setting-row">
+          <label class="field-label" for="setup-album-sort">Default album sort</label>
+          <select id="setup-album-sort" class="select-input"
+                  aria-label="Default album sort" ${settingsDisabled}>
+            ${sortOptions}
+          </select>
+        </div>
+        <div class="setup-setting-row">
+          <label class="field-label" for="setup-album-order">Sort order</label>
+          <select id="setup-album-order" class="select-input"
+                  aria-label="Default album sort order" ${settingsDisabled}>
+            <option value="desc"${albumSortDescending ? " selected" : ""}>Descending</option>
+            <option value="asc"${!albumSortDescending ? " selected" : ""}>Ascending</option>
+          </select>
+        </div>
+        <div class="field-help">Defaults apply when the player loads. URL format is used for copied links.</div>
+        <div class="setup-settings-actions">
+          <button class="primary-button" type="button"
+                  data-action="setup-save-settings" ${settingsDisabled}>
+            Save Settings
+          </button>
+        </div>
+        ${passwordHtml}
+        <div id="setup-settings-error" class="field-help setup-error"></div>
+      </div>`;
     const authHtml = state.adminAuthenticated
       ? `<div class="setup-auth-row">
            <span class="setup-auth-state">Admin authenticated</span>
@@ -4072,7 +4186,7 @@
           <div>
             <div class="sheet-title">Setup</div>
             <div class="sheet-subtitle">
-              Scan the configured libraries or rebuild the database identifiers.
+              Manage library IDs, scan folders, and rebuild database identifiers.
             </div>
           </div>
           <button class="sheet-close" type="button" data-action="close-modal"
@@ -4081,13 +4195,14 @@
         <div class="sheet-body">
           ${readOnly ? '<div class="field-help">This server is running in read-only mode. Scanning and ReKey are disabled.</div>' : ""}
           <div class="setup-section">
-            <div class="field-label">Libraries from config.json</div>
-            ${setupLibrariesHtml()}
+            <div class="field-label">Libraries</div>
+            ${setupLibrariesHtml(enabled, state.adminAuthenticated)}
           </div>
           <div class="setup-section">
             ${authHtml}
             ${errorHtml}
           </div>
+          ${settingsHtml}
           <div class="setup-section">
             <div class="field-label">Operations</div>
             <div class="setup-actions">
@@ -4125,6 +4240,217 @@
           loginAdmin();
         }
       });
+    }
+  }
+
+  function openLibraryIdDialog(libraryPath) {
+    if (!state.adminAuthenticated) {
+      toast("Log in from Setup to change the Library ID.", { error: true });
+      return;
+    }
+    const libraries = (state.setupInfo && state.setupInfo.libraries) || [];
+    const library = libraries.find((item) => item.path === libraryPath);
+    if (!library) return;
+    state.modalMode = "library-id";
+    state.libraryIdTarget = {
+      path: library.path,
+      identifier: library.identifier || "",
+      namespace: library.namespace || "",
+      name: library.name || library.path,
+    };
+    el.modalRoot.innerHTML = `
+      <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Change Library ID">
+        <div class="sheet-header">
+          <img class="app-mark-small" src="/static/app-icon.svg" alt="">
+          <div>
+            <div class="sheet-title">Change Library ID</div>
+            <div class="sheet-subtitle">${esc(library.path)}</div>
+          </div>
+          <button class="sheet-close" type="button" data-action="library-id-cancel"
+                  title="Close">×</button>
+        </div>
+        <div class="sheet-body">
+          <label class="field">
+            <span class="field-label" for="library-id-input">Library ID</span>
+            <input id="library-id-input" class="text-input" type="text"
+                   autocomplete="off" spellcheck="false"
+                   value="${esc(library.identifier || "")}"
+                   aria-label="Library ID">
+          </label>
+          <div class="field-help">Current namespace: ${esc(library.namespace || "—")}</div>
+          <div class="field-help">ReKey is required to apply the new namespace and song IDs.</div>
+          <div id="library-id-error" class="field-help setup-error"></div>
+          <div class="sheet-actions">
+            <button class="secondary-button" type="button"
+                    data-action="library-id-cancel">Cancel</button>
+            <button class="primary-button" type="button"
+                    data-action="library-id-save">Save</button>
+          </div>
+        </div>
+      </div>`;
+    el.modalRoot.classList.remove("hidden");
+    const input = $("#library-id-input", el.modalRoot);
+    if (input) {
+      input.focus();
+      input.select();
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          saveLibraryIdDialog();
+        }
+      });
+    }
+  }
+
+  async function saveLibraryIdDialog() {
+    const target = state.libraryIdTarget;
+    const input = $("#library-id-input", el.modalRoot);
+    const errorNode = $("#library-id-error", el.modalRoot);
+    if (!target || !input) return;
+    const identifier = input.value.trim();
+    if (!identifier) {
+      if (errorNode) errorNode.textContent = "Library ID must not be empty.";
+      input.focus();
+      return;
+    }
+    const button = $('[data-action="library-id-save"]', el.modalRoot);
+    if (button) button.disabled = true;
+    try {
+      const data = await api("/api/setup/library", {
+        method: "PATCH",
+        headers: adminHeaders(),
+        body: JSON.stringify({
+          path: target.path,
+          identifier,
+        }),
+      });
+      closeModal();
+      await openSetupModal();
+      toast(data.rekeyRequired
+        ? "Library ID updated. Run ReKey to apply the new namespace."
+        : "Library ID updated");
+    } catch (error) {
+      if (button) button.disabled = false;
+      if (error.status === 401) {
+        setAdminToken("");
+        state.adminAuthenticated = false;
+        closeModal();
+        await openSetupModal();
+        state.setupError = "Session expired. Enter the admin password again.";
+        renderSetup();
+        return;
+      }
+      if (errorNode) errorNode.textContent = error.message;
+    }
+  }
+
+  async function saveSetupSettings() {
+    if (!state.adminAuthenticated) {
+      state.setupError = "Log in to change settings.";
+      renderSetup();
+      return;
+    }
+    const urlSelect = $("#setup-url-format", el.modalRoot);
+    const sortSelect = $("#setup-album-sort", el.modalRoot);
+    const orderSelect = $("#setup-album-order", el.modalRoot);
+    if (!urlSelect || !sortSelect || !orderSelect) return;
+    const button = $('[data-action="setup-save-settings"]', el.modalRoot);
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Saving…";
+    }
+    try {
+      const data = await api("/api/setup/settings", {
+        method: "PATCH",
+        headers: adminHeaders(),
+        body: JSON.stringify({
+          urlIdFormat: urlSelect.value,
+          albumSort: sortSelect.value,
+          albumSortDescending: orderSelect.value === "desc",
+        }),
+      });
+      state.urlIdFormat = data.urlIdFormat;
+      state.albumSort = data.albumSort;
+      state.albumSortAsc = !data.albumSortDescending;
+      state.albumPage = 1;
+      if (state.setupInfo) {
+        state.setupInfo.urlIdFormat = data.urlIdFormat;
+        state.setupInfo.albumSort = data.albumSort;
+        state.setupInfo.albumSortDescending = data.albumSortDescending;
+      }
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Save Settings";
+      }
+      toast("Settings updated");
+    } catch (error) {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Save Settings";
+      }
+      if (error.status === 401) {
+        setAdminToken("");
+        state.adminAuthenticated = false;
+        state.setupError = "Session expired. Enter the admin password again.";
+        renderSetup();
+        return;
+      }
+      const note = $("#setup-settings-error", el.modalRoot);
+      if (note) note.textContent = error.message;
+    }
+  }
+
+  async function changeAdminPassword() {
+    if (!state.adminAuthenticated) {
+      state.setupError = "Log in to change settings.";
+      renderSetup();
+      return;
+    }
+    const newInput = $("#setup-new-password", el.modalRoot);
+    const confirmInput = $("#setup-confirm-password", el.modalRoot);
+    const note = $("#setup-settings-error", el.modalRoot);
+    const password = newInput ? newInput.value : "";
+    if (!password) {
+      if (note) note.textContent = "Enter a new password.";
+      if (newInput) newInput.focus();
+      return;
+    }
+    if (password !== (confirmInput ? confirmInput.value : "")) {
+      if (note) note.textContent = "The passwords do not match.";
+      if (confirmInput) confirmInput.focus();
+      return;
+    }
+    if (note) note.textContent = "";
+    const button = $('[data-action="setup-change-password"]', el.modalRoot);
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Changing…";
+    }
+    try {
+      await api("/api/setup/password", {
+        method: "POST",
+        headers: adminHeaders(),
+        body: JSON.stringify({ newPassword: password }),
+      });
+      setAdminToken("");
+      state.adminAuthenticated = false;
+      if (state.setupInfo) state.setupInfo.authenticated = false;
+      state.setupError = "";
+      renderSetup();
+      toast("Admin password changed. Log in with the new password.");
+    } catch (error) {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Change Password";
+      }
+      if (error.status === 401) {
+        setAdminToken("");
+        state.adminAuthenticated = false;
+        state.setupError = "Session expired. Enter the admin password again.";
+        renderSetup();
+        return;
+      }
+      if (note) note.textContent = error.message;
     }
   }
 
@@ -5194,10 +5520,21 @@
         startSetupScan("full");
       } else if (action === "setup-rekey") {
         promptSetupRekey();
+      } else if (action === "setup-save-settings") {
+        saveSetupSettings();
+      } else if (action === "setup-change-password") {
+        changeAdminPassword();
       } else if (action === "setup-back") {
         openSetupModal();
       } else if (action === "rekey-reload") {
         reloadAfterRekey();
+      } else if (action === "edit-library-id") {
+        openLibraryIdDialog(actionEl.dataset.path || "");
+      } else if (action === "library-id-save") {
+        saveLibraryIdDialog();
+      } else if (action === "library-id-cancel") {
+        closeModal();
+        openSetupModal();
       } else if (action === "add-to-playlist-pick") {
         addToPlaylistFromDialog(actionEl.dataset.playlistId);
       } else if (action === "playlist-cancel") {

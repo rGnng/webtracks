@@ -290,13 +290,69 @@ class LibraryDB:
         finally:
             conn.close()
 
-    def sync_libraries(self, libraries):
-        """Apply configured library identifiers/namespaces to the database.
+    def set_library_identifier(self, root, identifier):
+        """Update a library's identifier without changing its namespace.
 
-        A configured namespace is a snapshot used for song UUID generation.
-        Changing the identifier alone does not change an existing namespace;
-        that happens on ReKey.  Missing identifiers/namespaces are filled from
-        the existing row, or generated for a new library.
+        The namespace is the snapshot used for song UUID generation.  It stays
+        unchanged until ReKey recalculates it from the new identifier.
+        """
+
+        if self.read_only:
+            raise ReadOnlyError("The database is open in read-only mode")
+        root = canonical_path(root)
+        identifier = str(identifier or "").strip()
+        if any(unicodedata.category(char) == "Cc" for char in identifier):
+            raise ValueError("Library identifier contains control characters")
+        namespace = normalize_identifier(identifier)
+        if not namespace:
+            raise ValueError("Library identifier must not be empty")
+
+        self.ensure_schema()
+        conn = connect(self.path, read_only=False)
+        try:
+            existing = conn.execute(
+                "SELECT id, path, name, identifier, id_namespace, enabled, "
+                "date_added FROM libraries WHERE path = ?",
+                (root,),
+            ).fetchone()
+            if existing is None:
+                raise ValueError("Library not found: %s" % root)
+            for row in conn.execute(
+                "SELECT id, path, identifier, id_namespace FROM libraries"
+            ):
+                if row["id"] == existing["id"]:
+                    continue
+                for value in (row["identifier"], row["id_namespace"]):
+                    if normalize_identifier(value or "") == namespace:
+                        raise ValueError(
+                            "Library identifier/namespace is already in use: %s"
+                            % identifier
+                        )
+            with conn:
+                conn.execute(
+                    "UPDATE libraries SET identifier = ? WHERE id = ?",
+                    (identifier, existing["id"]),
+                )
+            row = conn.execute(
+                "SELECT id, path, name, identifier, id_namespace, enabled, "
+                "date_added FROM libraries WHERE id = ?",
+                (existing["id"],),
+            ).fetchone()
+            return self._library_row(row)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "Library identifier or namespace is already in use"
+            ) from exc
+        finally:
+            conn.close()
+
+    def sync_libraries(self, libraries):
+        """Ensure every supplied folder has a library row.
+
+        Runtime libraries live in the database.  This method is used to import
+        legacy config paths once; existing rows are never updated, so library
+        identifiers and namespaces stay database state.  New rows receive the
+        next ``libraryN`` identifier and matching namespace.
         """
 
         if self.read_only:
@@ -306,83 +362,30 @@ class LibraryDB:
         try:
             with conn:
                 for entry in libraries or []:
-                    root = canonical_path(entry["path"])
+                    root = canonical_path(
+                        entry if isinstance(entry, str) else entry["path"]
+                    )
                     existing = conn.execute(
-                        "SELECT id, name, identifier, id_namespace"
-                        " FROM libraries WHERE path = ?",
+                        "SELECT id FROM libraries WHERE path = ?",
                         (root,),
                     ).fetchone()
-                    identifier = entry.get("identifier")
-                    if identifier is None and existing is not None:
-                        identifier = existing["identifier"]
-                    if identifier is None or not str(identifier).strip():
-                        identifier = self._next_identifier(conn)
-                    identifier = str(identifier).strip()
-                    if any(
-                        unicodedata.category(char) == "Cc"
-                        for char in identifier
-                    ):
-                        raise ValueError(
-                            "Library identifier contains control characters"
-                        )
-                    if not normalize_identifier(identifier):
-                        raise ValueError(
-                            "Library identifier must not be empty"
-                        )
-
-                    namespace = entry.get("namespace")
-                    if namespace is None and existing is not None:
-                        namespace = existing["id_namespace"]
-                    if namespace is None or not str(namespace).strip():
-                        namespace = normalize_identifier(identifier)
-                    namespace = normalize_identifier(namespace)
-                    if not namespace:
-                        raise ValueError(
-                            "Library namespace must not be empty: %s" % root
-                        )
-
                     if existing is not None:
-                        conn.execute(
-                            "UPDATE libraries SET identifier = ?,"
-                            " id_namespace = ?, name = ? WHERE path = ?",
-                            (
-                                identifier,
-                                namespace,
-                                existing["name"] or os.path.basename(root),
-                                root,
-                            ),
-                        )
-                    else:
-                        conn.execute(
-                            "INSERT INTO libraries"
-                            "(id, path, kind, name, identifier, id_namespace,"
-                            " date_added) VALUES(?, ?, 'external', ?, ?, ?, ?)",
-                            (
-                                stable_uuid("library|" + root),
-                                root,
-                                os.path.basename(root) or "Music Library",
-                                identifier,
-                                namespace,
-                                _now(),
-                            ),
-                        )
-
-                rows = conn.execute(
-                    "SELECT path, identifier, id_namespace FROM libraries"
-                ).fetchall()
-                seen = {}
-                for row in rows:
-                    for raw_value in (
-                        row["identifier"], row["id_namespace"]
-                    ):
-                        key = normalize_identifier(raw_value)
-                        owner = seen.get(key)
-                        if owner is not None and owner != row["path"]:
-                            raise ValueError(
-                                "Library identifier/namespace is already in use: %s"
-                                % raw_value
-                            )
-                        seen[key] = row["path"]
+                        continue
+                    identifier = self._next_identifier(conn)
+                    namespace = normalize_identifier(identifier)
+                    conn.execute(
+                        "INSERT INTO libraries"
+                        "(id, path, kind, name, identifier, id_namespace,"
+                        " date_added) VALUES(?, ?, 'external', ?, ?, ?, ?)",
+                        (
+                            stable_uuid("library|" + root),
+                            root,
+                            os.path.basename(root) or "Music Library",
+                            identifier,
+                            namespace,
+                            _now(),
+                        ),
+                    )
         except sqlite3.IntegrityError as exc:
             raise ValueError(
                 "Library identifier or namespace is already in use"

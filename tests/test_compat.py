@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -10,13 +11,21 @@ import unittest
 import wave
 from unittest import mock
 
+import yaml
+
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from server import Config, create_app, main  # noqa: E402
-from tracks_config import load_settings, save_libraries_to_config  # noqa: E402
+from tracks_config import (  # noqa: E402
+    DEFAULT_ADMIN_PASSWORD_SHA1,
+    DEFAULT_SETTINGS,
+    load_settings,
+    update_config,
+)
+from tracks_logging import _compress_archive, configure_logging  # noqa: E402
 from tracks_db import LibraryDB, LibraryCatalog  # noqa: E402
 from tracks_identity import (  # noqa: E402
     album_uuid,
@@ -236,9 +245,10 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn(song["id"], second["songIDMap"])
 
 
-    def test_sync_libraries_uses_namespace_snapshot(self):
+    def test_library_identity_comes_from_database(self):
         libraries = self.db.sync_libraries([{
             "path": self.music,
+            # These legacy config fields must not overwrite database state.
             "identifier": "renamedlib",
             "namespace": "testlib",
         }])
@@ -246,12 +256,13 @@ class DatabaseTests(unittest.TestCase):
             item for item in libraries
             if os.path.realpath(item["path"]) == os.path.realpath(self.music)
         )
-        self.assertEqual(library["identifier"], "renamedlib")
+        self.assertEqual(library["identifier"], "testlib")
         self.assertEqual(library["id_namespace"], "testlib")
 
-        result = self.db.rekey_libraries({
-            os.path.realpath(self.music): "renamedlib",
-        })
+        library = self.db.set_library_identifier(self.music, "renamedlib")
+        self.assertEqual(library["identifier"], "renamedlib")
+        self.assertEqual(library["id_namespace"], "testlib")
+        result = self.db.rekey_libraries()
         expected = song_uuid(
             "renamedlib", normalize_relative_path("Artist/Album/01 Song.flac")
         )
@@ -466,13 +477,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(removed.get_json()["removed"], 1)
 
 
-    def test_setup_scan_uses_only_configured_libraries(self):
+    def test_setup_scan_uses_database_libraries(self):
         app = create_app(
             Config(
                 self.db_path,
                 self.artwork,
                 read_only=False,
-                music_dirs=[self.music],
             )
         )
         client = app.test_client()
@@ -526,28 +536,21 @@ class ApiTests(unittest.TestCase):
         songs = self.client.get("/api/songs").get_json()["songs"]
         self.assertEqual(len(songs), 1)
 
-    def test_rekey_writes_namespace_back_to_config(self):
+    def test_rekey_updates_namespace_in_database_only(self):
         config_path = os.path.join(self.root, "config.json")
         with open(config_path, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps({
+            json.dump({
                 "database_dir": "data",
-                "libraries": [{
-                    "identifier": "newidentifier",
-                    "namespace": "api",
-                    "path": self.music,
-                }],
-            }))
+                "libraries": [{"path": self.music}],
+            }, handle)
+        self.db.set_library_identifier(self.music, "newidentifier")
         app = create_app(
             Config(
                 self.db_path,
                 self.artwork,
                 read_only=False,
                 config_path=config_path,
-                libraries=[{
-                    "identifier": "newidentifier",
-                    "namespace": "api",
-                    "path": self.music,
-                }],
+                libraries=[{"path": self.music}],
             )
         )
         client = app.test_client()
@@ -569,12 +572,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(job["phase"], "Done")
         with open(config_path, "r", encoding="utf-8") as handle:
             values = json.load(handle)
-        self.assertEqual(
-            values["libraries"][0]["namespace"], "newidentifier"
-        )
-        self.assertEqual(
-            values["libraries"][0]["identifier"], "newidentifier"
-        )
+        self.assertEqual(values["libraries"], [{"path": self.music}])
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         library = dict(conn.execute("SELECT * FROM libraries").fetchone())
@@ -597,13 +595,257 @@ class ApiTests(unittest.TestCase):
         ).get_json()
         self.assertEqual(repeat["online"], 2)
 
+    def test_setup_library_id_update_keeps_namespace(self):
+        config_path = os.path.join(self.root, "config.json")
+        with open(config_path, "w", encoding="utf-8") as handle:
+            json.dump({
+                "database_dir": "data",
+                "libraries": [{"path": self.music}],
+            }, handle)
+        app = create_app(
+            Config(
+                self.db_path,
+                self.artwork,
+                read_only=False,
+                config_path=config_path,
+                libraries=[{"path": self.music}],
+            )
+        )
+        client = app.test_client()
+        payload = {
+            "path": self.music,
+            "identifier": "renamed",
+        }
+        self.assertEqual(
+            client.patch("/api/setup/library", json=payload).status_code,
+            401,
+        )
+        token = client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+        response = client.patch(
+            "/api/setup/library", json=payload, headers=headers
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["rekeyRequired"])
+        with open(config_path, "r", encoding="utf-8") as handle:
+            values = json.load(handle)
+        self.assertEqual(values["libraries"], [{"path": self.music}])
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        library = dict(conn.execute("SELECT * FROM libraries").fetchone())
+        conn.close()
+        self.assertEqual(library["identifier"], "renamed")
+        self.assertEqual(library["id_namespace"], "api")
+
+    def test_legacy_config_paths_seed_database_once(self):
+        legacy_db = os.path.join(self.root, "legacy.sqlite")
+        app = create_app(
+            Config(
+                legacy_db,
+                os.path.join(self.root, "LegacyArtwork"),
+                read_only=False,
+                libraries=[{"path": self.music}],
+            )
+        )
+        self.assertIsNotNone(app)
+        libraries = LibraryDB(legacy_db).load_libraries()
+        self.assertEqual(len(libraries), 1)
+        self.assertEqual(libraries[0]["identifier"], "library1")
+        self.assertEqual(libraries[0]["id_namespace"], "library1")
+        self.assertEqual(
+            os.path.realpath(libraries[0]["path"]),
+            os.path.realpath(self.music),
+        )
+
+    def test_setup_settings_url_format_and_password(self):
+        config_path = os.path.join(self.root, "config.yaml")
+        with open(config_path, "w", encoding="utf-8") as handle:
+            yaml.safe_dump({
+                "database_dir": "data",
+                "libraries": [{"path": self.music}],
+            }, handle)
+        app = create_app(
+            Config(
+                self.db_path,
+                self.artwork,
+                read_only=False,
+                config_path=config_path,
+                libraries=[{"path": self.music}],
+            )
+        )
+        client = app.test_client()
+        public_setup = client.get("/api/setup").get_json()
+        self.assertNotIn("path", public_setup["libraries"][0])
+        self.assertEqual(
+            client.patch(
+                "/api/setup/settings", json={"urlIdFormat": "uuid"}
+            ).status_code,
+            401,
+        )
+        token = client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+        private_setup = client.get("/api/setup", headers=headers).get_json()
+        self.assertEqual(
+            private_setup["libraries"][0]["path"],
+            os.path.realpath(self.music),
+        )
+        self.assertEqual(
+            client.patch(
+                "/api/setup/settings",
+                json={"urlIdFormat": "invalid"},
+                headers=headers,
+            ).status_code,
+            400,
+        )
+        response = client.patch(
+            "/api/setup/settings",
+            json={"urlIdFormat": "base64url"},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["urlIdFormat"], "base64url")
+        self.assertEqual(
+            client.get("/api/setup", headers=headers)
+            .get_json()["urlIdFormat"],
+            "base64url",
+        )
+        response = client.patch(
+            "/api/setup/settings",
+            json={"albumSort": "artist", "albumSortDescending": False},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["albumSort"], "artist")
+        self.assertFalse(response.get_json()["albumSortDescending"])
+        setup = client.get("/api/setup", headers=headers).get_json()
+        self.assertEqual(setup["albumSort"], "artist")
+        self.assertFalse(setup["albumSortDescending"])
+        self.assertEqual(
+            client.patch(
+                "/api/setup/settings",
+                json={"albumSort": "invalid"},
+                headers=headers,
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            client.patch(
+                "/api/setup/settings",
+                json={"albumSortDescending": "no"},
+                headers=headers,
+            ).status_code,
+            400,
+        )
+        with open(config_path, "r", encoding="utf-8") as handle:
+            values = yaml.safe_load(handle)
+        self.assertEqual(values["url_id_format"], "base64url")
+        self.assertEqual(values["album_sort"], "artist")
+        self.assertFalse(values["album_sort_descending"])
+        self.assertEqual(values["libraries"], [{"path": self.music}])
+
+        response = client.post(
+            "/api/setup/password",
+            json={"newPassword": "s3cret"},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["reauthenticate"])
+        self.assertFalse(
+            client.get("/api/setup", headers=headers)
+            .get_json()["authenticated"]
+        )
+        self.assertEqual(
+            client.post(
+                "/api/setup/login", json={"password": "1"}
+            ).status_code,
+            401,
+        )
+        self.assertEqual(
+            client.post(
+                "/api/setup/login", json={"password": "s3cret"}
+            ).status_code,
+            200,
+        )
+        with open(config_path, "r", encoding="utf-8") as handle:
+            values = yaml.safe_load(handle)
+        self.assertEqual(
+            values["admin_password_sha1"],
+            hashlib.sha1(b"s3cret").hexdigest(),
+        )
+
+    def test_operation_log_records_admin_actions(self):
+        with tempfile.TemporaryDirectory() as logs_dir:
+            config_path = os.path.join(self.root, "ops-config.yaml")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({
+                    "database_dir": "data",
+                    "libraries": [{"path": self.music}],
+                }, handle)
+            runtime, operations = configure_logging(logs_dir, "INFO")
+            try:
+                app = create_app(
+                    Config(
+                        self.db_path,
+                        self.artwork,
+                        read_only=False,
+                        config_path=config_path,
+                        libraries=[{"path": self.music}],
+                    )
+                )
+                client = app.test_client()
+                client.post(
+                    "/api/setup/login", json={"password": "wrong"}
+                )
+                token = client.post(
+                    "/api/setup/login", json={"password": "1"}
+                ).get_json()["token"]
+                client.patch(
+                    "/api/setup/settings",
+                    json={"urlIdFormat": "base64url"},
+                    headers={"Authorization": "Bearer " + token},
+                )
+                for handler in operations.handlers:
+                    handler.flush()
+                with open(
+                    os.path.join(logs_dir, "operations.log"),
+                    "r",
+                    encoding="utf-8",
+                ) as handle:
+                    records = [
+                        json.loads(line) for line in handle if line.strip()
+                    ]
+            finally:
+                for logger in (runtime, operations):
+                    for handler in list(logger.handlers):
+                        logger.removeHandler(handler)
+                        handler.close()
+        actions = [record["action"] for record in records]
+        self.assertIn("admin_login", actions)
+        self.assertIn("url_id_format_changed", actions)
+        self.assertTrue(any(
+            record["action"] == "admin_login"
+            and record["result"] == "failure"
+            for record in records
+        ))
+        for record in records:
+            self.assertIn("time", record)
+            self.assertIn("remoteIp", record)
+            self.assertIn("method", record)
+            self.assertIn("path", record)
+
     def test_setup_admin_auth_and_scan_guards(self):
         setup = self.client.get("/api/setup")
         self.assertEqual(setup.status_code, 200)
         payload = setup.get_json()
         self.assertEqual(payload["name"], "Setup")
         self.assertFalse(payload["authenticated"])
-        self.assertEqual(payload["libraries"], [])
+        self.assertEqual(len(payload["libraries"]), 1)
+        self.assertEqual(payload["libraries"][0]["identifier"], "api")
+        self.assertNotIn("path", payload["libraries"][0])
         wrong = self.client.post(
             "/api/setup/login", json={"password": "wrong"}
         )
@@ -617,21 +859,49 @@ class ApiTests(unittest.TestCase):
         authed = self.client.get("/api/setup", headers=headers).get_json()
         self.assertTrue(authed["authenticated"])
         self.assertEqual(
+            authed["libraries"][0]["path"], os.path.realpath(self.music)
+        )
+        self.assertEqual(
             self.client.post(
                 "/api/setup/scan", json={"mode": "quick"}
             ).status_code,
             401,
         )
         self.assertEqual(
-            self.client.post(
-                "/api/setup/scan", json={"mode": "quick"}, headers=headers
-            ).status_code,
-            400,
-        )
-        self.assertEqual(
             self.client.post("/api/setup/rekey").status_code,
             401,
         )
+
+
+class LoggingTests(unittest.TestCase):
+    def test_logs_are_written_and_archives_compress(self):
+        import logging
+        import gzip
+
+        with tempfile.TemporaryDirectory() as root:
+            runtime, operations = configure_logging(root, "INFO")
+            runtime.info("runtime test message")
+            operations.info('{"action":"test"}')
+            for logger in (runtime, operations):
+                for handler in logger.handlers:
+                    handler.flush()
+            runtime_path = os.path.join(root, "runtime.log")
+            operations_path = os.path.join(root, "operations.log")
+            with open(runtime_path, encoding="utf-8") as handle:
+                self.assertIn("runtime test message", handle.read())
+            with open(operations_path, encoding="utf-8") as handle:
+                self.assertIn('"action":"test"', handle.read())
+            archive = os.path.join(root, "runtime.log.2026-01-01")
+            with open(archive, "w", encoding="utf-8") as handle:
+                handle.write("old log\n")
+            _compress_archive(archive)
+            self.assertFalse(os.path.exists(archive))
+            with gzip.open(archive + ".gz", "rt", encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "old log\n")
+            for logger in (runtime, operations):
+                for handler in list(logger.handlers):
+                    logger.removeHandler(handler)
+                    handler.close()
 
 
 class ConfigTests(unittest.TestCase):
@@ -733,7 +1003,7 @@ class ConfigTests(unittest.TestCase):
                     load_settings(path)["admin_password_sha1"], "b" * 40
                 )
 
-    def test_library_config_and_namespace_write_back(self):
+    def test_library_config_only_stores_paths(self):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "config.json")
             music = os.path.join(root, "Music")
@@ -748,25 +1018,79 @@ class ConfigTests(unittest.TestCase):
                 }, handle)
             with self._clean_env():
                 settings = load_settings(path)
-            self.assertEqual(settings["libraries"][0]["identifier"], "main")
-            self.assertEqual(settings["libraries"][0]["namespace"], "main")
-            self.assertEqual(settings["music_dirs"], [os.path.realpath(music)])
-            save_libraries_to_config(path, [{
-                "identifier": "main",
-                "namespace": "nextnamespace",
-                "path": music,
-            }])
-            with self._clean_env():
-                updated = load_settings(path)
             self.assertEqual(
-                updated["libraries"][0]["namespace"], "nextnamespace"
+                settings["libraries"], [{"path": os.path.realpath(music)}]
             )
+            self.assertEqual(settings["music_dirs"], [os.path.realpath(music)])
+            update_config(path, url_id_format="base64url")
             with open(path, "r", encoding="utf-8") as handle:
                 raw = json.load(handle)
-            self.assertNotIn("music_dirs", raw)
+            self.assertEqual(raw["libraries"], [{"path": music}])
+            self.assertEqual(raw["url_id_format"], "base64url")
+
+    def test_yaml_config_roundtrip(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.yaml")
+            music = os.path.join(root, "Music")
+            with open(path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({
+                    "database_dir": "var",
+                    "log_level": "warning",
+                    "logs_dir": "logfiles",
+                    "libraries": [{
+                        "identifier": "main",
+                        "namespace": "main",
+                        "path": music,
+                    }],
+                }, handle)
+            with self._clean_env():
+                settings = load_settings(path)
+            self.assertEqual(settings["log_level"], "WARNING")
             self.assertEqual(
-                set(raw["libraries"][0]),
-                {"identifier", "namespace", "path"},
+                settings["logs_dir"], os.path.realpath(
+                    os.path.join(root, "logfiles")
+                )
+            )
+            self.assertEqual(
+                settings["libraries"], [{"path": os.path.realpath(music)}]
+            )
+            update_config(path, log_level="debug")
+            with open(path, "r", encoding="utf-8") as handle:
+                raw = yaml.safe_load(handle)
+            self.assertEqual(raw["libraries"], [{"path": music}])
+            self.assertEqual(raw["log_level"], "debug")
+
+    def test_example_config_is_complete_and_not_ignored(self):
+        example = os.path.join(ROOT, "config.example.yaml")
+        with open(example, "r", encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle)
+        self.assertEqual(set(raw), set(DEFAULT_SETTINGS))
+        self.assertEqual(
+            raw["admin_password_sha1"], DEFAULT_ADMIN_PASSWORD_SHA1
+        )
+
+        with open(os.path.join(ROOT, ".gitignore"), "r",
+                  encoding="utf-8") as handle:
+            ignored = {
+                line.strip() for line in handle
+                if line.strip() and not line.lstrip().startswith("#")
+            }
+        self.assertIn("config.yaml", ignored)
+        self.assertNotIn("config.example.yaml", ignored)
+
+        with tempfile.TemporaryDirectory() as root:
+            target = os.path.join(root, "config.yaml")
+            shutil.copyfile(example, target)
+            with self._clean_env():
+                settings = load_settings(target)
+            self.assertEqual(settings["port"], 8765)
+            self.assertEqual(
+                settings["database"],
+                os.path.join(root, "data", "library.sqlite"),
+            )
+            self.assertEqual(
+                settings["admin_password_sha1"],
+                DEFAULT_ADMIN_PASSWORD_SHA1,
             )
 
     def test_init_creates_local_database_and_artwork_dir(self):

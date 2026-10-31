@@ -1,0 +1,50 @@
+# WebTracks configuration example.
+#
+# Copy this file to config.yaml and edit the copy:
+#
+#     cp config.example.yaml config.yaml
+#
+# config.yaml is ignored by git so local paths, ports, and password hashes are
+# never committed. Relative paths below are resolved against the directory
+# containing the configuration file.
+
+# Directory for library.sqlite and the Artwork/ cache.
+database_dir: data
+
+# Listen address. Use 127.0.0.1 for local-only access, or 0.0.0.0 for LAN.
+host: 127.0.0.1
+port: 8765
+
+# Refuse all database writes: stars, play counts, playlists, scans, and ReKey.
+read_only: false
+
+# Artwork JPEG quality, 15-100.
+jpeg_quality: 80
+
+# Transcode cache limit in MiB, shared across all qualities.
+# 0 transcodes without retaining output.
+transcode_cache_mb: 512
+
+# Default Albums sort: recentlyAdded, album, artist, or year.
+album_sort: recentlyAdded
+album_sort_descending: true
+
+# SHA-1 of the Setup admin password. The value below is the development
+# default for the password "1". Change it from Setup -> Settings.
+admin_password_sha1: "356a192b7913b04c54574d18c28d46e6395428ab"
+
+# Runtime logs: runtime.log and operations.log.
+logs_dir: logs
+log_level: INFO
+
+# How album, song, and playlist links are displayed: uuid or base64url.
+url_id_format: uuid
+
+# Optional: seed library folders on first start. After that, folders and
+# identifiers live in the libraries table of library.sqlite, not in this file.
+# libraries:
+#   - path: /Users/me/Music
+
+# Legacy alternative to "libraries", imported once for older configurations.
+# music_dirs:
+#   - /Users/me/Music

@@ -24,7 +24,7 @@ queue overlay, and a 24pt status bar.
 - Album sorting: Recently Added / Album Name / Artist / Year; the sort menu
   separates the Ascending / Descending choice with a divider at the bottom.
   The default comes from `album_sort` and `album_sort_descending` in
-  `config.json`, currently recently added, descending.
+  `config.yaml`, currently recently added, descending.
 - The album grid loads every album at once and scrolls vertically, using native
   lazy loading for artwork. Paging is virtual: the page count is derived from the
   current column count and visible row count, and first / previous / next / last
@@ -45,14 +45,17 @@ queue overlay, and a 24pt status bar.
   (globe icon), **Server Cache** usage, and playback state.
 - Database and artwork cache generation from both the command line and the
   in-page **Setup** panel. Setup requires the admin password and offers Quick
-  Scan, Full Scan, and ReKey, and can only operate on the libraries listed in
-  the config file.
+  Scan, Full Scan, ReKey, URL ID format / default sort selection, and admin
+  password changes; it can only operate on libraries already stored in the
+  database.
+- Daily runtime and operation logs under `logs/`; archives are gzip-compressed
+  at midnight.
 - All frontend assets live under `static/`; there are no CDN requests.
 
 ## Requirements
 
 - Python 3.9+
-- `Flask`, `Pillow` (see `requirements.txt`)
+- `Flask`, `Pillow`, `PyYAML` (see `requirements.txt`)
 - `ffmpeg` / `ffprobe`
   - FLAC is read entirely in Python and does not need ffmpeg.
   - Tags and artwork for MP3 / M4A / WAV / AIFF / OGG / Opus are read through
@@ -75,7 +78,8 @@ brew install ffmpeg
 By default the database and artwork cache live inside the project directory,
 completely separate from macOS Tracks:
 
-- Config: `config.json` (created automatically on first run)
+- Config: `config.yaml` (created automatically on first run; a complete
+  template is tracked as `config.example.yaml`)
 - Database: `data/library.sqlite`
 - Artwork cache: `data/Artwork/`
 
@@ -86,57 +90,53 @@ It never reads or writes `~/Music/Tracks/library.sqlite` and never uses
 python3 server.py
 ```
 
-Open <http://127.0.0.1:8780> (on your LAN use `http://<host-ip>:8780`).
+Open <http://127.0.0.1:8765> (or the host and port set in `config.yaml`).
 
 ### Configuration file
 
-`config.json` sets the data directory, configured libraries, and server
-options:
+`config.yaml` contains application settings only. Music folders, library IDs,
+and namespaces all live in `library.sqlite`, as in the macOS Tracks app.
 
-```json
-{
-  "database_dir": "data",
-  "libraries": [
-    {
-      "identifier": "library1",
-      "namespace": "library1",
-      "path": "/Users/me/Music"
-    }
-  ],
-  "host": "0.0.0.0",
-  "port": 8780,
-  "read_only": false,
-  "jpeg_quality": 80,
-  "transcode_cache_mb": 512,
-  "album_sort": "recentlyAdded",
-  "album_sort_descending": true,
-  "admin_password_sha1": "356a192b7913b04c54574d18c28d46e6395428ab"
-}
+The repository tracks a complete commented template at `config.example.yaml`.
+Copy it before editing:
+
+```bash
+cp config.example.yaml config.yaml
 ```
+
+`config.yaml` is ignored by git, so your local paths, host/port, and password
+hash are never committed. If the file is missing, the server creates it with
+the built-in defaults on first run.
 
 | Key | Description |
 | --- | --- |
-| `database_dir` | Directory for the database and artwork cache. Relative paths are resolved against the directory containing `config.json`. The database is always `library.sqlite`, and artwork goes in the `Artwork/` subdirectory. |
-| `libraries` | Configured libraries. Each entry has `identifier`, `namespace`, and `path`. Command-line scans and the in-page Setup only use these entries; the web UI cannot add or change paths. Legacy `music_dirs` arrays are still accepted. |
-| `host` / `port` | Listen address, currently `0.0.0.0:8780` for LAN access. |
+| `database_dir` | Directory for the database and artwork cache. Relative paths are resolved against the directory containing `config.yaml`. The database is always `library.sqlite`, and artwork goes in the `Artwork/` subdirectory. |
+| `host` / `port` | Listen address, default `127.0.0.1:8765`. Set `host: 0.0.0.0` for LAN access. |
 | `read_only` | When `true`, all database writes are blocked: stars, play counts, playlist changes, scans, and ReKey. Playback, streaming, and browsing still work. |
 | `jpeg_quality` | Artwork JPEG quality, 15–100, default 80. |
 | `transcode_cache_mb` | Transcode cache limit in MiB, shared across all qualities, default 512. `0` transcodes without retaining output. |
 | `album_sort` | Default Albums sort: `recentlyAdded`, `album`, `artist`, or `year`; defaults to `recentlyAdded`. |
 | `album_sort_descending` | Whether the default sort is descending; defaults to `true` (recently added first). |
-| `admin_password_sha1` | SHA-1 of the Setup admin password (40 hex characters). The development default is the single digit `1`, which hashes to `356a192b7913b04c54574d18c28d46e6395428ab`. |
+| `admin_password_sha1` | SHA-1 of the Setup admin password (40 hex characters). Prefer changing it from **Setup → Settings**. The development default is the single digit `1`, which hashes to `356a192b7913b04c54574d18c28d46e6395428ab`. |
+| `logs_dir` | Directory for `runtime.log` and `operations.log`; default `logs`, relative to `config.yaml`. |
+| `log_level` | Runtime log threshold (`DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`); default `INFO`. The operation log always records at `INFO`. |
+| `url_id_format` | How album, song, and playlist links are displayed: `uuid` or `base64url`; default `uuid`. Can also be changed from **Setup → Settings**. |
 
-Library fields:
+Library IDs and namespaces are **not** configuration values. They live in the
+`libraries` table of `library.sqlite`, matching the macOS Tracks app:
 
-- `identifier`: unique source string used by the next ReKey. It can be changed
-  without changing existing song UUIDs.
-- `namespace`: the frozen namespace snapshot used to derive song UUIDs. ReKey
-  recalculates it from `identifier` and writes the new value back to
-  `config.json`.
-- `path`: the music folder.
+- `identifier` is the source string used by the next ReKey;
+- `id_namespace` is the frozen namespace snapshot used to derive song UUIDs.
 
-`identifier` also accepts the alias `id` when reading. Newly written configs
-use `identifier`, `namespace`, and `path`.
+Legacy `libraries` or `music_dirs` sections are imported into the database once
+so existing configs keep working; they are no longer required. Legacy
+`identifier` and `namespace` keys are ignored. Library metadata is never written
+back to `config.yaml`.
+
+The library ID can be changed from **Setup** using the pencil button next to a
+library. This updates the database only and keeps the current namespace; run
+**ReKey Database** afterwards to calculate the new namespace and song UUIDs.
+ReKey writes the new namespace back to the database, never to `config.yaml`.
 
 The transcode cache is an in-process LRU keyed by song ID, quality, source file
 path, mtime, and size. Each quality keeps its own entries while sharing one
@@ -159,7 +159,7 @@ python3 server.py \
 Environment variables can override as well:
 
 ```bash
-export WEBTRACKS_CONFIG="$HOME/Documents/ws/webtracks/config.json"
+export WEBTRACKS_CONFIG="$HOME/Documents/ws/webtracks/config.yaml"
 export WEBTRACKS_DATABASE_DIR="$HOME/Music/webtracks-data"
 export WEBTRACKS_DB="/path/to/library.sqlite"
 export WEBTRACKS_ARTWORK="/path/to/Artwork"
@@ -183,7 +183,7 @@ python3 server.py --read-only
 ## Generating the database and artwork cache
 
 The database and artwork cache are entirely generated by this project, in the
-location given by `database_dir` in `config.json`. The first start or an `init`
+location given by `database_dir` in `config.yaml`. The first start or an `init`
 run creates an empty database and the `Artwork/` directory.
 
 ### Initializing an empty database
@@ -201,28 +201,8 @@ artwork:  /path/to/webtracks/data/Artwork
 
 ### Scanning music folders
 
-It is best to list the music folders in `config.json` first:
-
-```json
-{
-  "database_dir": "data",
-  "libraries": [
-    {
-      "identifier": "library1",
-      "namespace": "library1",
-      "path": "/Users/me/Music"
-    }
-  ]
-}
-```
-
-Then run:
-
-```bash
-python3 server.py scan --force
-```
-
-You can also pass a directory on the command line only:
+Music folder paths are stored in the `libraries` table of `library.sqlite`.
+Add a folder (or refresh an existing one) with:
 
 ```bash
 python3 server.py scan \
@@ -231,17 +211,25 @@ python3 server.py scan \
   --force
 ```
 
+The first scan creates the library row with the given `identifier` and a matching
+namespace. Later scans reuse the existing row; omit `--root` to scan every
+enabled library already in the database:
+
+```bash
+python3 server.py scan --force
+```
+
 Options:
 
 | Option | Description |
 | --- | --- |
-| `--root PATH` | Ad-hoc music directory for a command-line scan. When omitted, the libraries in `config.json` are used. |
-| `--identifier NAME` | Identifier used with an ad-hoc `--root` scan. Defaults to `library1`, `library2`, and so on. |
+| `--root PATH` | Add or refresh one music folder. When omitted, every enabled library in the database is scanned. |
+| `--identifier NAME` | Identifier used when `--root` creates a new library. Existing libraries keep their identifier. Defaults to `library1`, `library2`, and so on. |
 | `--mode quick/full` | `quick` only discovers new files; `full` re-reads files whose mtime or size changed. Defaults to `quick`. |
 | `--force` | Ignores the mtime/size cache, re-reads every file, and rewrites the artwork cache. |
 | `--prune` | Deletes song rows that belong to the library but no longer exist on disk. |
 | `--jpeg-quality N` | Artwork JPEG quality, 15–100, default 80. |
-| `--config PATH` | Config file to use; defaults to `config.json` next to `server.py`. |
+| `--config PATH` | Config file to use; defaults to `config.yaml` next to `server.py`. |
 
 Incremental scan:
 
@@ -260,23 +248,35 @@ and ReKey require signing in first:
 - Password field: `Enter admin password`
 - Only the SHA-1 of the password is stored, in `admin_password_sha1`
 - The development password is `1`
-- While signed out the action buttons are visible but greyed out and disabled
+- While signed out, library folders, action buttons, and settings are hidden or
+  greyed out
 
 Once signed in you can:
 
 - **Quick Scan**: scan the configured directories for new files;
 - **Full Scan**: re-read every file and rebuild metadata and the artwork cache;
+- **Change Library ID**: edit a library's `identifier` from the pencil button.
+  The current namespace stays in the database until ReKey runs;
 - **ReKey Database**: recompute all song, album, and artist IDs while preserving
   stars, play counts, playlists, and dates. The current namespace is recalculated
-  from each library identifier and written back to `config.json`. A SQLite
-  backup is written automatically first, and the page must be reloaded
-  afterwards.
+  from each database identifier and stored back in the database. A SQLite backup
+  is written automatically first, and the page must be reloaded afterwards;
+- **Settings → URL ID format**: display copied album, song, and playlist links
+  as UUIDs or URL-safe Base64;
+- **Settings → Default album sort / Sort order**: choose Recently Added, Album
+  Name, Artist, or Year, and Ascending or Descending for new player sessions;
+  and
+- **Settings → Change Password**: replace the admin password. The new SHA-1 is
+  written to `config.yaml`, every admin token is revoked, and you must log in
+  again with the new password.
 
-The backend only scans the libraries in `config.json`; the web UI cannot enter
-scan paths or add libraries. Scans run in a background thread, the Setup window
-shows progress, and the library refreshes automatically when a scan finishes.
+The Setup library list shows each library's ID with its current namespace in
+grey. The music folder path is only shown after signing in. The backend only
+scans libraries already stored in the database; the web UI cannot enter scan
+paths or add libraries. Scans run in a background thread, the Setup window shows
+progress, and the library refreshes automatically when a scan finishes.
 
-Generate a new password hash:
+You can still generate a password hash manually:
 
 ```bash
 printf 'your-password' | shasum -a 1
@@ -284,11 +284,27 @@ printf 'your-password' | shasum -a 1
 
 Put the resulting 40-character hex string into `admin_password_sha1`.
 
+### Logging
+
+Two log files are written under `logs_dir`:
+
+- `runtime.log` records startup, scan, ReKey, and server errors. Its threshold is
+  `log_level` (default `INFO`).
+- `operations.log` is JSONL. Each entry includes a local timestamp, action,
+  result, source IP, `X-Forwarded-For`, user agent, HTTP method, path, and
+  action-specific details. It covers admin login/logout, password and URL-format
+  changes, library ID changes, scans, ReKey, and playlist changes.
+
+Both files rotate at local midnight. The previous day's file is gzip-compressed
+(for example `operations.log.2026-10-30.gz`), and old archives are pruned after
+30 days. Set `WEBTRACKS_LOG_DIR` or `WEBTRACKS_LOG_LEVEL` to override the file
+settings.
+
 ## Compatibility with Tracks
 
 This project uses the same schema, stable ID algorithm, and artwork cache naming
 as Tracks, but its database and cache are a separate copy stored in the
-`database_dir` from `config.json`. The native Tracks app can keep using its own
+`database_dir` from `config.yaml`. The native Tracks app can keep using its own
 library; the two never interfere.
 
 ### Database
@@ -451,6 +467,9 @@ first, then as a song, and rewrites the address bar to the canonical route. A
 song link opens its album, scrolls to the track, and highlights it; playback is
 not started automatically because browsers require a user gesture.
 
+Choose **Setup → Settings → URL ID format** to control whether newly copied
+links use UUIDs or URL-safe Base64. Both forms remain valid for incoming links.
+
 Right-click menus on albums, songs, and playlists include **Copy Album Link**,
 **Copy Song Link**, and **Copy Playlist Link**. The copied URL uses the current
 `scheme://host` plus the current app base path (for example `/webplayer/`) and
@@ -475,10 +494,12 @@ the canonical hash route.
 
 ```text
 webtracks/
-  config.json             database, library identifiers/namespaces, server options
+  config.example.yaml     complete tracked configuration template
+  config.yaml             local configuration (gitignored)
   server.py               Flask app, API, scan jobs, CLI entry point
   tracks_transcode.py     ffmpeg transcoding and the shared in-memory LRU cache
-  tracks_config.py        reads config.json and environment variables
+  tracks_config.py        reads config.yaml and environment variables
+  tracks_logging.py       daily runtime/operation logs with gzip archives
   tracks_identity.py      Swift-compatible stable UUIDs and name normalization
   tracks_db.py            schema, reads/writes, in-memory catalog
   tracks_scanner.py       FLAC/ffprobe tag reading, scanning, artwork cache
@@ -505,10 +526,14 @@ Coverage includes:
 - artwork cache JPEG sizing and naming;
 - shared in-memory LRU eviction, zero capacity, and oversized entries;
 - `/api/quality`, `/api/cache`, AAC streaming, and HTTP Range;
-- Setup admin password validation and rejection of unauthorized scans;
+- Setup admin authentication, URL ID format, default album sort, password
+  change/token revocation, and rejection of unauthorized scans;
 - scans using only configured directories and ignoring paths sent by the
   frontend;
+- library IDs/namespaces living in the database, and library ID edits keeping
+  the old namespace until ReKey;
 - song/album/artist IDs, stars, play counts, and playlists surviving a ReKey;
-- `config.json` path resolution and `init` creating a local database;
+- YAML config path resolution and path-only library entries;
+- runtime/operation log output and gzip archive compression;
 - the basic Flask API flow for bootstrap / songs / album / star (using a
   temporary database).

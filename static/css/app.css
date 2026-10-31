@@ -1932,8 +1932,10 @@ button:disabled {
    ------------------------------------------------------------------------- */
 
 .statusbar {
+  position: relative;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
   width: 100%;
   min-width: 0;
@@ -1957,13 +1959,17 @@ button:disabled {
 }
 
 .status-text {
-  flex: 1;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: min(56%, 720px);
   min-width: 0;
   text-align: center;
-  padding: 0 8px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 .status-gear {
@@ -2495,14 +2501,58 @@ button:disabled {
   border: 1px solid rgba(255, 255, 255, 0.055);
 }
 
+.setup-library-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setup-library-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
 .setup-library-name {
+  min-width: 0;
+  flex: 0 1 auto;
   color: var(--text);
   font-size: 12.5px;
   font-weight: 500;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.setup-library-edit {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--text-2);
+}
+
+.setup-library-edit:hover:not(:disabled) {
+  background: var(--control-bg-active);
+  color: var(--text);
+}
+
+.setup-library-edit:disabled {
+  opacity: 0.32;
+}
+
+.setup-library-edit .icon {
+  width: 11px;
+  height: 11px;
 }
 
 .setup-library-path {
-  margin-top: 2px;
+  margin-top: 3px;
   color: var(--text-2);
   font-size: 10.5px;
   overflow: hidden;
@@ -2511,10 +2561,56 @@ button:disabled {
 }
 
 .setup-library-namespace {
-  margin-top: 2px;
+  flex: 0 0 auto;
   color: var(--text-3);
   font-size: 9.5px;
   letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.setup-setting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setup-setting-row .field-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.setup-setting-row .select-input {
+  width: 170px;
+  flex: 0 0 auto;
+}
+
+.setup-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.setup-password-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+}
+
+.setup-password-grid {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setup-password-grid .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.setup-password-grid button {
+  flex: 0 0 auto;
 }
 
 .setup-auth-row {
