@@ -3938,13 +3938,19 @@
         label: "Delete",
         icon: "trash",
         danger: true,
-        action: () => confirmDialog({
-          title: "Delete Playlist?",
-          message: `“${playlist.name}” will be removed from the database. The music files are not touched.`,
-          confirmLabel: "Delete",
-          danger: true,
-          onConfirm: () => deletePlaylist(playlist.id),
-        }),
+        action: () => {
+          if (!state.adminAuthenticated) {
+            toast("Log in from Setup to delete playlists.", { error: true });
+            return;
+          }
+          confirmDialog({
+            title: "Delete Playlist?",
+            message: `“${playlist.name}” will be removed from the database. The music files are not touched.`,
+            confirmLabel: "Delete",
+            danger: true,
+            onConfirm: () => deletePlaylist(playlist.id),
+          });
+        },
       },
     ]);
   }
@@ -4104,6 +4110,10 @@
   }
 
   async function deletePlaylist(playlistId) {
+    if (!state.adminAuthenticated) {
+      toast("Log in from Setup to delete playlists.", { error: true });
+      return;
+    }
     try {
       await api(`/api/playlists/${encodeURIComponent(playlistId)}`, { method: "DELETE" });
       state.playlists = state.playlists.filter((playlist) => playlist.id !== playlistId);

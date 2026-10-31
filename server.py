@@ -1184,13 +1184,14 @@ def create_app(config):
 
     @app.delete("/api/playlists/<playlist_id>")
     def api_delete_playlist(playlist_id):
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
         before = catalog.playlist_by_id.get(playlist_id) or {}
         try:
             catalog.delete_playlist(playlist_id)
             _log_operation(
-                "playlist_deleted", "success",
-                actor=("admin" if admin_auth.is_authenticated(_admin_token())
-                       else "anonymous"),
+                "playlist_deleted", "success", actor="admin",
                 playlistId=playlist_id,
                 playlistName=before.get("name"),
             )

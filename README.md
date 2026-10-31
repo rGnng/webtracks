@@ -503,9 +503,9 @@ What is implemented:
   master-detail Artists view (the Genres view is kept in code but hidden);
 - a two-column Playlists view: Stared and playlists on the left, the selected
   playlist's songs on the right. Playlists can be created, renamed, and deleted.
-  Creating and renaming a playlist require the Setup admin login; adding or
-  removing songs from existing playlists still works while signed out, and
-  deleting an entire playlist also remains available while signed out;
+  Creating, renaming, and deleting a playlist require the Setup admin login;
+  adding or removing songs from existing playlists still works while signed
+  out;
 - a virtualized queue overlay;
 - stars, play counts, and playlist create/update/delete. Context menus are
   single-level, and Add to Playlist uses a separate picker window;

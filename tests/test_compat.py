@@ -694,6 +694,23 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(removed.status_code, 200)
         self.assertEqual(removed.get_json()["removed"], 1)
+        self.assertEqual(
+            self.client.delete(
+                "/api/playlists/" + created["id"]
+            ).status_code,
+            401,
+        )
+        deleted = self.client.delete(
+            "/api/playlists/" + created["id"],
+            headers={"Authorization": "Bearer " + token},
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(
+            self.client.get(
+                "/api/playlists/" + created["id"]
+            ).status_code,
+            404,
+        )
 
 
     def test_setup_scan_uses_database_libraries(self):
