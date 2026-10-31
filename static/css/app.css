@@ -470,7 +470,7 @@ button:disabled {
   flex-direction: column;
   align-items: center;
   gap: 5.25px;
-  padding: 6.75px 6px 0;
+  padding: 5.75px 6px 0;
   border-radius: 4px;
 }
 
@@ -533,13 +533,13 @@ button:disabled {
 #lcd-shuffle {
   position: absolute;
   left: 4.5px;
-  top: 4px;
+  top: 3px;
 }
 
 .lcd-side-group {
   position: absolute;
   right: 4.5px;
-  top: 4px;
+  top: 3px;
   display: flex;
   gap: 2px;
 }
@@ -548,7 +548,7 @@ button:disabled {
   position: absolute;
   left: 4.5px;
   right: 4.5px;
-  bottom: 7px;
+  bottom: 8px;
   display: flex;
   justify-content: space-between;
   align-items: center;
