@@ -2425,8 +2425,35 @@
     songs = songsSorted(songs, sort);
     state.songRows = songs;
 
+    const detail = context.kind === "playlist"
+      ? (state.playlistDetails.get(context.playlistId) || {})
+      : {};
+    const title = context.kind === "songs"
+      ? "Songs"
+      : context.kind === "starred"
+        ? "Stared"
+        : (detail.name || "Playlist");
+    const count = songs.length;
     const table = songTableHtml(context, songs);
-    setContent(table);
+    setContent(`
+      <div class="song-view">
+        <div class="view-bar song-view-bar">
+          <div class="view-title">${esc(title)}</div>
+          <div class="view-subtitle">${count.toLocaleString()} ${count === 1 ? "song" : "songs"}</div>
+          <div class="view-spacer"></div>
+          <div class="song-view-actions">
+            <button class="album-action-button" type="button"
+                    data-action="song-view-play" ${count ? "" : "disabled"}>
+              ${icon("play")} Play
+            </button>
+            <button class="album-action-button" type="button"
+                    data-action="song-view-shuffle" ${count ? "" : "disabled"}>
+              ${icon("shuffle")} Shuffle
+            </button>
+          </div>
+        </div>
+        ${table}
+      </div>`);
     bindSongTable(el.content, context, songs);
     updateStatus();
   }
@@ -4931,6 +4958,12 @@
         if (state.songRows.length) playCollection(state.songRows, 0);
         break;
       case "playlist-view-shuffle":
+        if (state.songRows.length) playShuffled(state.songRows);
+        break;
+      case "song-view-play":
+        if (state.songRows.length) playCollection(state.songRows, 0);
+        break;
+      case "song-view-shuffle":
         if (state.songRows.length) playShuffled(state.songRows);
         break;
       case "open-starred":
