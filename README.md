@@ -276,7 +276,8 @@ Once signed in you can:
   as UUIDs or URL-safe Base64;
 - **Settings → Default album sort / Sort order**: choose Recently Added, Album
   Name, Artist, or Year, and Ascending or Descending for new player sessions;
-  and
+- **Settings → Cover size / JPEG quality**: set the album art cache dimensions
+  and JPEG quality. Existing covers are rebuilt by the next Full Scan; and
 - **Settings → Change Password**: replace the admin password. The new SHA-1 is
   written to `config.yaml`, every admin token is revoked, and you must log in
   again with the new password.

@@ -1084,6 +1084,8 @@ def create_app(config):
             "urlIdFormat": config.url_id_format,
             "albumSort": config.album_sort,
             "albumSortDescending": config.album_sort_descending,
+            "coverSize": config.cover_size,
+            "jpegQuality": config.jpeg_quality,
             "scan": scans.snapshot(),
             "rekey": rekeys.snapshot(),
         })
@@ -1197,6 +1199,24 @@ def create_app(config):
             if not isinstance(album_sort_descending, bool):
                 return _error("albumSortDescending must be a boolean", 400)
             updates["album_sort_descending"] = album_sort_descending
+        cover_size = None
+        if "coverSize" in body:
+            try:
+                cover_size = int(body.get("coverSize"))
+            except (TypeError, ValueError):
+                return _error("coverSize must be an integer", 400)
+            if not 16 <= cover_size <= 2000:
+                return _error("coverSize must be between 16 and 2000", 400)
+            updates["cover_size"] = cover_size
+        jpeg_quality = None
+        if "jpegQuality" in body:
+            try:
+                jpeg_quality = int(body.get("jpegQuality"))
+            except (TypeError, ValueError):
+                return _error("jpegQuality must be an integer", 400)
+            if not 15 <= jpeg_quality <= 100:
+                return _error("jpegQuality must be between 15 and 100", 400)
+            updates["jpeg_quality"] = jpeg_quality
         if not updates:
             return _error("No settings were provided", 400)
         if not config.config_path:
@@ -1205,6 +1225,8 @@ def create_app(config):
         previous_url_format = config.url_id_format
         previous_album_sort = config.album_sort
         previous_album_sort_descending = config.album_sort_descending
+        previous_cover_size = config.cover_size
+        previous_jpeg_quality = config.jpeg_quality
         try:
             update_config(config.config_path, **updates)
         except Exception as exc:
@@ -1215,6 +1237,10 @@ def create_app(config):
             config.album_sort = album_sort
         if album_sort_descending is not None:
             config.album_sort_descending = album_sort_descending
+        if cover_size is not None:
+            config.cover_size = cover_size
+        if jpeg_quality is not None:
+            config.jpeg_quality = jpeg_quality
         if url_format is not None:
             _log_operation(
                 "url_id_format_changed", "success", actor="admin",
@@ -1228,10 +1254,20 @@ def create_app(config):
                 oldDescending=previous_album_sort_descending,
                 newDescending=config.album_sort_descending,
             )
+        if cover_size is not None or jpeg_quality is not None:
+            _log_operation(
+                "artwork_cache_changed", "success", actor="admin",
+                oldCoverSize=previous_cover_size,
+                newCoverSize=config.cover_size,
+                oldJpegQuality=previous_jpeg_quality,
+                newJpegQuality=config.jpeg_quality,
+            )
         return _json_response({
             "urlIdFormat": config.url_id_format,
             "albumSort": config.album_sort,
             "albumSortDescending": config.album_sort_descending,
+            "coverSize": config.cover_size,
+            "jpegQuality": config.jpeg_quality,
         })
 
     @app.post("/api/setup/password")

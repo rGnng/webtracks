@@ -4262,6 +4262,10 @@
     const albumSortDescending =
       typeof info.albumSortDescending === "boolean"
         ? info.albumSortDescending : !state.albumSortAsc;
+    const coverSize = Number.isFinite(Number(info.coverSize))
+      ? Number(info.coverSize) : 500;
+    const jpegQuality = Number.isFinite(Number(info.jpegQuality))
+      ? Number(info.jpegQuality) : 80;
     const sortOptions = [
       ["recentlyAdded", "Recently Added"],
       ["album", "Album Name"],
@@ -4312,6 +4316,22 @@
             <option value="desc"${albumSortDescending ? " selected" : ""}>Descending</option>
             <option value="asc"${!albumSortDescending ? " selected" : ""}>Ascending</option>
           </select>
+        </div>
+        <div class="setup-setting-row">
+          <label class="field-label" for="setup-cover-size">Cover size</label>
+          <input id="setup-cover-size" class="text-input setup-number-input"
+                 type="number" min="16" max="2000" step="1"
+                 value="${coverSize}" title="Applied by the next full scan"
+                 aria-label="Album art cover size in pixels" ${settingsDisabled}>
+          <span class="setup-setting-unit">px</span>
+        </div>
+        <div class="setup-setting-row">
+          <label class="field-label" for="setup-jpeg-quality">JPEG quality</label>
+          <input id="setup-jpeg-quality" class="text-input setup-number-input"
+                 type="number" min="15" max="100" step="1"
+                 value="${jpegQuality}" title="Applied by the next full scan"
+                 aria-label="Album art JPEG quality" ${settingsDisabled}>
+          <span class="setup-setting-unit">%</span>
         </div>
         <div class="setup-settings-actions">
           <button class="primary-button" type="button"
@@ -4509,7 +4529,10 @@
     const urlSelect = $("#setup-url-format", el.modalRoot);
     const sortSelect = $("#setup-album-sort", el.modalRoot);
     const orderSelect = $("#setup-album-order", el.modalRoot);
-    if (!urlSelect || !sortSelect || !orderSelect) return;
+    const coverInput = $("#setup-cover-size", el.modalRoot);
+    const jpegInput = $("#setup-jpeg-quality", el.modalRoot);
+    if (!urlSelect || !sortSelect || !orderSelect
+        || !coverInput || !jpegInput) return;
     const button = $('[data-action="setup-save-settings"]', el.modalRoot);
     if (button) {
       button.disabled = true;
@@ -4523,6 +4546,8 @@
           urlIdFormat: urlSelect.value,
           albumSort: sortSelect.value,
           albumSortDescending: orderSelect.value === "desc",
+          coverSize: Number(coverInput.value),
+          jpegQuality: Number(jpegInput.value),
         }),
       });
       state.urlIdFormat = data.urlIdFormat;
@@ -4533,6 +4558,8 @@
         state.setupInfo.urlIdFormat = data.urlIdFormat;
         state.setupInfo.albumSort = data.albumSort;
         state.setupInfo.albumSortDescending = data.albumSortDescending;
+        state.setupInfo.coverSize = data.coverSize;
+        state.setupInfo.jpegQuality = data.jpegQuality;
       }
       if (button) {
         button.disabled = false;

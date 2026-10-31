@@ -2654,6 +2654,17 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+.setup-setting-row .setup-number-input {
+  width: 82px;
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.setup-setting-unit {
+  color: var(--text-3);
+  font-size: 10.5px;
+}
+
 .setup-settings-actions {
   display: flex;
   justify-content: flex-end;

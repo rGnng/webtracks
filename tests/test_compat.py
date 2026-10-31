@@ -774,11 +774,40 @@ class ApiTests(unittest.TestCase):
             ).status_code,
             400,
         )
+        response = client.patch(
+            "/api/setup/settings",
+            json={"coverSize": 320, "jpegQuality": 70},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["coverSize"], 320)
+        self.assertEqual(response.get_json()["jpegQuality"], 70)
+        setup = client.get("/api/setup", headers=headers).get_json()
+        self.assertEqual(setup["coverSize"], 320)
+        self.assertEqual(setup["jpegQuality"], 70)
+        self.assertEqual(
+            client.patch(
+                "/api/setup/settings",
+                json={"coverSize": 8},
+                headers=headers,
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            client.patch(
+                "/api/setup/settings",
+                json={"jpegQuality": 101},
+                headers=headers,
+            ).status_code,
+            400,
+        )
         with open(config_path, "r", encoding="utf-8") as handle:
             values = yaml.safe_load(handle)
         self.assertEqual(values["url_id_format"], "base64url")
         self.assertEqual(values["album_sort"], "artist")
         self.assertFalse(values["album_sort_descending"])
+        self.assertEqual(values["cover_size"], 320)
+        self.assertEqual(values["jpeg_quality"], 70)
         self.assertEqual(values["libraries"], [{"path": self.music}])
 
         response = client.post(
