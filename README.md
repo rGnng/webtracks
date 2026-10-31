@@ -126,6 +126,7 @@ the built-in defaults on first run.
 | --- | --- |
 | `database_dir` | Directory for the database and artwork cache. Relative paths are resolved against the directory containing `config.yaml`. The database is always `library.sqlite`, and artwork goes in the `Artwork/` subdirectory. |
 | `host` / `port` | Listen address, default `127.0.0.1:8765`. Set `host: 0.0.0.0` for LAN access. |
+| `server_header` | Value of the `Server` HTTP response header. Empty (default) omits the header; set a custom string if you want one. |
 | `read_only` | When `true`, all database writes are blocked: stars, play counts, playlist changes, scans, and ReKey. Playback, streaming, and browsing still work. |
 | `jpeg_quality` | Album art cache JPEG quality, 15–100, default 80. |
 | `cover_size` | Maximum album art cache width/height in pixels, 16–2000, default 500. |

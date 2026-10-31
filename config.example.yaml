@@ -15,6 +15,9 @@ database_dir: data
 host: 127.0.0.1
 port: 8765
 
+# Value of the HTTP Server response header. Empty hides the header.
+server_header: ""
+
 # Refuse all database writes: stars, play counts, playlists, scans, and ReKey.
 read_only: false
 

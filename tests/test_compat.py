@@ -540,6 +540,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(fallback.status_code, 200)
         self.assertEqual(fallback.mimetype, "image/svg+xml")
 
+    def test_server_header_is_hidden_or_configured(self):
+        self.assertNotIn("Server", self.client.get("/api/health").headers)
+        app = create_app(
+            Config(
+                self.db_path,
+                self.artwork,
+                server_header="WebTracks",
+            )
+        )
+        response = app.test_client().get("/api/health")
+        self.assertEqual(response.headers["Server"], "WebTracks")
+
     def test_bootstrap_hides_filesystem_paths(self):
         boot = self.client.get("/api/bootstrap").get_json()
         self.assertNotIn("musicDirs", boot)
@@ -1541,6 +1553,25 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(
                     load_settings(path)["transcode_cache_mb"], 32
                 )
+
+    def test_server_header_default_and_override(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('{"database_dir": "var"}')
+            with self._clean_env():
+                settings = load_settings(path)
+            self.assertEqual(settings["server_header"], "")
+
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"server_header": "WebTracks"}, handle)
+            with self._clean_env():
+                settings = load_settings(path)
+            self.assertEqual(settings["server_header"], "WebTracks")
+            with self._clean_env():
+                os.environ["WEBTRACKS_SERVER_HEADER"] = "Hidden"
+                settings = load_settings(path)
+            self.assertEqual(settings["server_header"], "Hidden")
 
     def test_audio_formats_default_and_override(self):
         with tempfile.TemporaryDirectory() as root:

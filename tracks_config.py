@@ -31,6 +31,7 @@ DEFAULT_SETTINGS = {
     "database_dir": "data",
     "host": "127.0.0.1",
     "port": 8765,
+    "server_header": "",
     "read_only": False,
     "jpeg_quality": 80,
     "cover_size": 500,
@@ -307,6 +308,19 @@ def load_settings(config_path=None):
         os.environ.get("WEBTRACKS_PORT", values.get("port")),
         DEFAULT_SETTINGS["port"],
     )
+    server_header = str(
+        os.environ.get(
+            "WEBTRACKS_SERVER_HEADER",
+            values.get("server_header", DEFAULT_SETTINGS["server_header"]),
+        ) or ""
+    ).strip()
+    if len(server_header) > 200 or any(
+        ord(char) < 32 or ord(char) == 127 for char in server_header
+    ):
+        raise ValueError(
+            "server_header must be at most 200 characters without "
+            "control characters"
+        )
     jpeg_quality = _as_quality(
         os.environ.get("WEBTRACKS_JPEG_QUALITY", values.get("jpeg_quality")),
         DEFAULT_SETTINGS["jpeg_quality"],
@@ -453,6 +467,7 @@ def load_settings(config_path=None):
         "music_dirs": music_dirs,
         "host": str(host),
         "port": port,
+        "server_header": server_header,
         "read_only": read_only,
         "jpeg_quality": jpeg_quality,
         "cover_size": cover_size,

@@ -28,6 +28,7 @@ import time
 from flask import (
     Flask, Response, current_app, request, send_file, send_from_directory,
 )
+from werkzeug.serving import WSGIRequestHandler
 
 from tracks_admin_guard import AdminLoginGuard
 from tracks_analytics import Analytics
@@ -87,6 +88,7 @@ class Config:
                  cover_size=None, music_dirs=None, config_path=None,
                  transcode_cache_mb=None,
                  audio_formats=None, default_audio_format=None,
+                 server_header=None,
                  album_sort=None, album_sort_descending=None,
                  admin_password_sha1=None, libraries=None,
                  admin_bruteforce_limit=None,
@@ -160,6 +162,12 @@ class Config:
             spec["id"] for spec in self.audio_quality_specs
             if spec["index"] == default_index
         )
+        server_header = str(server_header or "").strip()
+        if len(server_header) > 200 or any(
+            ord(char) < 32 or ord(char) == 127 for char in server_header
+        ):
+            server_header = ""
+        self.server_header = server_header
         self.album_sort = album_sort or "recentlyAdded"
         self.album_sort_descending = (
             True if album_sort_descending is None
@@ -222,6 +230,7 @@ class Config:
             transcode_cache_mb=settings.get("transcode_cache_mb"),
             audio_formats=settings.get("audio_formats"),
             default_audio_format=settings.get("default_audio_format"),
+            server_header=settings.get("server_header"),
             libraries=settings.get("libraries") or [],
             album_sort=settings.get("album_sort"),
             album_sort_descending=settings.get("album_sort_descending"),
@@ -1036,6 +1045,10 @@ def create_app(config):
 
     @app.after_request
     def security_headers(response):
+        if config.server_header:
+            response.headers["Server"] = config.server_header
+        elif "Server" in response.headers:
+            del response.headers["Server"]
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data:; media-src 'self'; "
@@ -1894,6 +1907,23 @@ def _cli_progress():
     return progress
 
 
+def _request_handler(server_header):
+    """Build a Werkzeug request handler with a configurable Server header."""
+
+    class Handler(WSGIRequestHandler):
+        def version_string(self):
+            return server_header or ""
+
+        def send_response(self, code, message=None):
+            self.log_request(code)
+            self.send_response_only(code, message)
+            if server_header:
+                self.send_header("Server", server_header)
+            self.send_header("Date", self.date_time_string())
+
+    return Handler
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="tracks-web",
@@ -1998,6 +2028,7 @@ def main(argv=None):
         ),
         audio_formats=settings["audio_formats"],
         default_audio_format=settings["default_audio_format"],
+        server_header=settings["server_header"],
         album_sort=settings["album_sort"],
         album_sort_descending=settings["album_sort_descending"],
         admin_password_sha1=settings["admin_password_sha1"],
@@ -2148,6 +2179,7 @@ def main(argv=None):
         debug=args.debug,
         threaded=True,
         use_reloader=False,
+        request_handler=_request_handler(config.server_header),
     )
     return 0
 
