@@ -40,6 +40,7 @@ from tracks_identity import (  # noqa: E402
 )
 from tracks_scanner import (  # noqa: E402
     ScannedTrack,
+    rebuild_artwork_cache,
     scan_one,
     write_artwork_cache,
 )
@@ -317,6 +318,34 @@ class ArtworkTests(unittest.TestCase):
             ) as image:
                 self.assertEqual(image.size, (300, 200))
 
+    def test_rebuild_rewrites_existing_cached_covers(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Image.new("RGB", (900, 600), (20, 80, 160))
+            buf = os.path.join(root, "source.png")
+            source.save(buf)
+            with open(buf, "rb") as handle:
+                data = handle.read()
+            album_id = stable_uuid("album|rebuild")
+            cache = os.path.join(root, "Artwork")
+            self.assertTrue(
+                write_artwork_cache(data, album_id, cache, 80, 500)
+            )
+            result = rebuild_artwork_cache(
+                [{
+                    "id": album_id,
+                    "songs": [{"_path": "/missing/audio.flac"}],
+                }],
+                cache,
+                jpeg_quality=70,
+                cover_size=300,
+            )
+            self.assertEqual(result["artwork"], 1)
+            self.assertEqual(result["missing"], 0)
+            with Image.open(
+                os.path.join(cache, album_id + ".jpg")
+            ) as image:
+                self.assertEqual(image.size, (300, 200))
+
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required")
 class ScannerEndToEndTests(unittest.TestCase):
@@ -569,6 +598,39 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(job["summary"]["backup"])
         songs = self.client.get("/api/songs").get_json()["songs"]
         self.assertEqual(len(songs), 1)
+
+    def test_setup_rebuild_artwork_job(self):
+        self.assertEqual(
+            self.client.post("/api/setup/artwork").status_code, 401
+        )
+        token = self.client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+        result = {
+            "albums": 2,
+            "artwork": 1,
+            "missing": 1,
+            "errors": [],
+        }
+        with mock.patch(
+            "server.rebuild_artwork_cache", return_value=result
+        ):
+            started = self.client.post(
+                "/api/setup/artwork", headers=headers
+            )
+            self.assertEqual(started.status_code, 202)
+            job = started.get_json()["job"]
+            for _ in range(60):
+                if not job.get("running"):
+                    break
+                time.sleep(0.05)
+                job = self.client.get("/api/setup/artwork").get_json()
+        self.assertFalse(job["running"])
+        self.assertEqual(job["phase"], "Done")
+        self.assertEqual(job["summary"]["albums"], 2)
+        self.assertEqual(job["summary"]["artwork"], 1)
+        self.assertEqual(job["summary"]["missing"], 1)
 
     def test_rekey_updates_namespace_in_database_only(self):
         config_path = os.path.join(self.root, "config.json")

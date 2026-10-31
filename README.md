@@ -16,8 +16,10 @@ queue overlay, and a 24pt status bar.
 - Plays FLAC / MP3 / M4A / WAV / AIFF / OGG / Opus, with HTTP Range seeking.
 - Quality selection: the waveform button in the toolbar opens a menu that
   currently offers AAC · 128 kbps, transcoded and streamed live by ffmpeg.
-  Transcode output goes into a shared in-memory LRU cache (512 MB by default);
-  future qualities such as MP3 share the same capacity.
+  Transcode output goes into a shared in-memory cache (512 MB by default);
+  future qualities such as MP3 share the same capacity. Entries stay for the
+  process lifetime and are cleared only when a new item would overflow the
+  budget.
 - Opens in the Albums view with an album grid, album detail, Songs table,
   Artists, and a Playlists overview containing Stared and user playlists. The
   Genres view is kept in the code but has no visible entry point.
@@ -144,12 +146,13 @@ library. This updates the database only and keeps the current namespace; run
 **ReKey Database** afterwards to calculate the new namespace and song UUIDs.
 ReKey writes the new namespace back to the database, never to `config.yaml`.
 
-The transcode cache is an in-process LRU keyed by song ID, quality, source file
-path, mtime, and size. Each quality keeps its own entries while sharing one
-capacity limit; every hit moves an entry to the front, and once the limit is
-exceeded the least recently used entry is evicted. The cache never writes into
-`data/` and is cleared when the server restarts. The status bar shows total usage
-and entry count, and hovering reveals a per-quality breakdown.
+The transcode cache is an in-process cache keyed by song ID, quality, source
+file path, mtime, and size. Each quality keeps its own entries while sharing one
+capacity limit. Entries are retained for the lifetime of the process; when a new
+item cannot fit, the whole cache is cleared and the new item is retained. The
+cache never writes into `data/` and is naturally cleared when the server
+restarts. The status bar shows total usage and entry count, and hovering reveals
+a per-quality breakdown.
 
 Paths may use `~`. Command-line arguments take precedence over the config file:
 
@@ -266,6 +269,8 @@ Once signed in you can:
 
 - **Quick Scan**: scan the configured directories for new files;
 - **Full Scan**: re-read every file and rebuild metadata and the artwork cache;
+- **Rebuild Artwork**: re-extract every album cover using the current
+  `cover_size` and `jpeg_quality` without rescanning the database;
 - **Change Library ID**: edit a library's `identifier` from the pencil button.
   The current namespace stays in the database until ReKey runs;
 - **ReKey Database**: recompute all song, album, and artist IDs while preserving
@@ -277,7 +282,8 @@ Once signed in you can:
 - **Settings → Default album sort / Sort order**: choose Recently Added, Album
   Name, Artist, or Year, and Ascending or Descending for new player sessions;
 - **Settings → Cover size / JPEG quality**: set the album art cache dimensions
-  and JPEG quality. Existing covers are rebuilt by the next Full Scan; and
+  and JPEG quality. Use **Rebuild Artwork** or the next Full Scan to rebuild
+  existing covers; and
 - **Settings → Change Password**: replace the admin password. The new SHA-1 is
   written to `config.yaml`, every admin token is revoked, and you must log in
   again with the new password.
@@ -418,8 +424,9 @@ The FLAC reader in `tracks_scanner.py` is a section-by-section port of
 - `/api/artwork/<album-id>` serves the cached JPEG file directly with
   `send_file`; it does not resize or re-encode per request. Missing covers use
   a generated SVG fallback.
-- Changing `cover_size` or `jpeg_quality` affects newly written covers. Run a
-  full scan with force (or **Setup → Full Scan**) to rebuild existing covers.
+- Changing `cover_size` or `jpeg_quality` affects newly written covers. Use
+  **Setup → Rebuild Artwork** or run a full scan with force to rebuild existing
+  covers.
 
 ### Known differences
 
@@ -452,7 +459,7 @@ What is implemented:
   volume is fixed at 100%; the waveform button selects quality (AAC · 128 kbps);
 - the status bar shows the Setup gear followed by Ready / Scanning / ReKeying
   progress, the online-client count with a globe icon, and Server Cache usage;
-- live AAC transcoding and a shared in-memory LRU cache, with total usage and
+- live AAC transcoding and a shared in-memory process-lifetime cache, with total usage and
   entry count in the status bar;
 - album cards, album paging, album detail, the virtualized Songs table, and a
   master-detail Artists view (the Genres view is kept in code but hidden);
@@ -530,7 +537,7 @@ webtracks/
   config.example.yaml     complete tracked configuration template
   config.yaml             local configuration (gitignored)
   server.py               Flask app, API, scan jobs, CLI entry point
-  tracks_transcode.py     ffmpeg transcoding and the shared in-memory LRU cache
+  tracks_transcode.py     ffmpeg transcoding and the shared in-memory cache
   tracks_config.py        reads config.yaml and environment variables
   tracks_logging.py       daily runtime/operation logs with gzip archives
   tracks_identity.py      Swift-compatible stable UUIDs and name normalization
@@ -557,7 +564,7 @@ Coverage includes:
 - database schema, stable library/artist/album/song IDs, and incremental upserts
   that preserve stars and play counts;
 - artwork cache JPEG sizing and naming;
-- shared in-memory LRU eviction, zero capacity, and oversized entries;
+- process-lifetime transcode entries, overflow clearing, zero capacity, and oversized entries;
 - `/api/quality`, `/api/cache`, AAC streaming, and HTTP Range;
 - Setup admin authentication, URL ID format, default album sort, password
   change/token revocation, and rejection of unauthorized scans;

@@ -2,11 +2,13 @@
 
 ``QUALITIES`` declares the streaming formats.  AAC 128 kbps is the first one;
 additional formats (MP3 and others) can be added with their ffmpeg codec and
-container settings.  The LRU cache is keyed by song, quality, source path,
-mtime, and size, so entries for different qualities share one byte budget.
-Set ``transcode_cache_mb`` in ``config.json`` (or
-``WEBTRACKS_TRANSCODE_CACHE_MB``) to change the budget; 0 disables retention
-while still allowing on-demand encoding.
+container settings.  The cache is keyed by song, quality, source path, mtime,
+and size, so entries for different qualities share one byte budget.  Entries
+are kept for the lifetime of the process until a new item would exceed the
+budget; at that point the cache is cleared and the new item is retained.  Set
+``transcode_cache_mb`` in ``config.yaml`` (or ``WEBTRACKS_TRANSCODE_CACHE_MB``)
+to change the budget; 0 disables retention while still allowing on-demand
+encoding.
 """
 
 from collections import OrderedDict
@@ -45,7 +47,7 @@ class TranscodeError(RuntimeError):
 
 
 class TranscodeCache:
-    """Thread-safe, size-limited LRU cache of encoded audio bytes."""
+    """Thread-safe, size-limited process-lifetime cache of audio bytes."""
 
     def __init__(self, max_bytes=DEFAULT_CACHE_MB * 1024 * 1024,
                  ffmpeg=None, encode_workers=2):
@@ -58,6 +60,7 @@ class TranscodeCache:
         self._hits = 0
         self._misses = 0
         self._evictions = 0
+        self._clears = 0
         self._encode_gate = threading.Semaphore(max(1, int(encode_workers)))
 
     # ------------------------------------------------------------------
@@ -89,6 +92,7 @@ class TranscodeCache:
                 "hits": self._hits,
                 "misses": self._misses,
                 "evictions": self._evictions,
+                "clears": self._clears,
                 "qualities": list(by_quality.values()),
             }
 
@@ -109,7 +113,6 @@ class TranscodeCache:
         with self._lock:
             entry = self._cache.get(key)
             if entry is not None:
-                self._cache.move_to_end(key)
                 self._hits += 1
                 return entry
             key_lock = self._keys.get(key)
@@ -123,7 +126,6 @@ class TranscodeCache:
             with self._lock:
                 entry = self._cache.get(key)
                 if entry is not None:
-                    self._cache.move_to_end(key)
                     self._hits += 1
                     return entry
                 self._misses += 1
@@ -138,20 +140,22 @@ class TranscodeCache:
             entry = (data, etag)
             with self._lock:
                 if self.max_bytes > 0 and len(data) <= self.max_bytes:
+                    if self._used_bytes + len(data) > self.max_bytes:
+                        self._clear_locked()
                     self._cache[key] = entry
                     self._used_bytes += len(data)
-                    self._cache.move_to_end(key)
-                    self._evict_locked()
                 return entry
 
     # ------------------------------------------------------------------
     # Internals
 
-    def _evict_locked(self):
-        while self._used_bytes > self.max_bytes and self._cache:
-            _key, (data, _etag) = self._cache.popitem(last=False)
-            self._used_bytes -= len(data)
-            self._evictions += 1
+    def _clear_locked(self):
+        if not self._cache:
+            return
+        self._evictions += len(self._cache)
+        self._clears += 1
+        self._cache.clear()
+        self._used_bytes = 0
 
     def _encode(self, source_path, quality):
         spec = QUALITY_BY_ID[quality]

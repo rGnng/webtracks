@@ -51,7 +51,11 @@ from tracks_db import (
 from tracks_identity import canonical_path, normalize_identifier
 from tracks_logging import configure_logging
 from tracks_rate_limit import DownloadRateLimiter
-from tracks_scanner import DEFAULT_JPEG_QUALITY, scan_one
+from tracks_scanner import (
+    DEFAULT_JPEG_QUALITY,
+    rebuild_artwork_cache,
+    scan_one,
+)
 
 runtime_log = logging.getLogger("webtracks.runtime")
 operation_log = logging.getLogger("webtracks.operations")
@@ -548,6 +552,122 @@ class RekeyManager:
                 self.job["running"] = False
                 self.job["finishedAt"] = time.time()
 
+
+class ArtworkManager:
+    """Rebuild cached album covers in a background thread."""
+
+    def __init__(self, config, catalog):
+        self.config = config
+        self.catalog = catalog
+        self.lock = threading.Lock()
+        self.job = {
+            "running": False,
+            "phase": "Idle",
+            "completed": 0,
+            "total": None,
+            "message": "",
+            "errors": [],
+            "startedAt": None,
+            "finishedAt": None,
+            "summary": None,
+        }
+
+    def snapshot(self):
+        with self.lock:
+            return {
+                **self.job,
+                "errors": list(self.job.get("errors") or []),
+            }
+
+    def _update(self, **values):
+        with self.lock:
+            self.job.update(values)
+
+    def _progress(self, phase, completed, total, message):
+        with self.lock:
+            self.job["phase"] = phase
+            self.job["completed"] = int(completed or 0)
+            self.job["total"] = None if total is None else int(total)
+            self.job["message"] = message or ""
+
+    def start(self):
+        if self.config.read_only:
+            raise ReadOnlyError("The server is running in read-only mode")
+        with self.lock:
+            if self.job.get("running"):
+                raise RuntimeError("A Rebuild Artwork job is already running")
+            self.job = {
+                "running": True,
+                "phase": "Starting",
+                "completed": 0,
+                "total": None,
+                "message": "Preparing artwork rebuild",
+                "errors": [],
+                "startedAt": time.time(),
+                "finishedAt": None,
+                "summary": None,
+            }
+        runtime_log.info("Artwork rebuild starting")
+        thread = threading.Thread(
+            target=self._run, name="webtracks-artwork", daemon=True
+        )
+        thread.start()
+        return self.snapshot()
+
+    def _run(self):
+        errors = []
+        summary = None
+        try:
+            self.catalog.maybe_refresh()
+            with self.catalog.lock:
+                albums = list(self.catalog.albums)
+            self._update(
+                phase="Rebuilding Artwork",
+                message="Extracting covers from audio files",
+            )
+            result = rebuild_artwork_cache(
+                albums,
+                self.config.artwork,
+                jpeg_quality=self.config.jpeg_quality,
+                cover_size=self.config.cover_size,
+                progress=self._progress,
+            )
+            errors.extend(result.get("errors") or [])
+            summary = {
+                "albums": result.get("albums", 0),
+                "artwork": result.get("artwork", 0),
+                "missing": result.get("missing", 0),
+                "errors": errors,
+            }
+            self._update(
+                phase="Done",
+                completed=result.get("albums", 0),
+                total=result.get("albums", 0),
+                message="Artwork cache rebuilt",
+                summary=summary,
+                errors=errors,
+            )
+            runtime_log.info(
+                "Artwork rebuild complete; albums=%s artwork=%s missing=%s "
+                "errors=%s",
+                summary["albums"], summary["artwork"], summary["missing"],
+                len(errors),
+            )
+        except Exception as exc:
+            errors.append(str(exc))
+            runtime_log.exception("Artwork rebuild failed")
+            self._update(
+                phase="Error",
+                message=str(exc),
+                errors=errors,
+                summary=summary,
+            )
+        finally:
+            with self.lock:
+                self.job["running"] = False
+                self.job["finishedAt"] = time.time()
+
+
 def _json_response(payload, status=200):
     raw = json.dumps(
         payload, ensure_ascii=False, separators=(",", ":")
@@ -723,6 +843,7 @@ def create_app(config):
         catalog.reload()
     scans = ScanManager(config, catalog)
     rekeys = RekeyManager(config, catalog)
+    artworks = ArtworkManager(config, catalog)
     admin_auth = AdminAuth(config.admin_password_sha1)
     presence = PresenceTracker()
     transcode_cache = TranscodeCache(
@@ -733,6 +854,7 @@ def create_app(config):
     app.extensions["tracks_config"] = config
     app.extensions["tracks_scans"] = scans
     app.extensions["tracks_rekeys"] = rekeys
+    app.extensions["tracks_artworks"] = artworks
     app.extensions["tracks_admin_auth"] = admin_auth
     app.extensions["tracks_presence"] = presence
     app.extensions["tracks_transcode_cache"] = transcode_cache
@@ -1088,6 +1210,7 @@ def create_app(config):
             "jpegQuality": config.jpeg_quality,
             "scan": scans.snapshot(),
             "rekey": rekeys.snapshot(),
+            "artworkJob": artworks.snapshot(),
         })
 
     @app.patch("/api/setup/library")
@@ -1305,6 +1428,8 @@ def create_app(config):
             return unauthorized
         if rekeys.snapshot().get("running"):
             return _error("A ReKey is already running", 409)
+        if artworks.snapshot().get("running"):
+            return _error("An artwork rebuild is already running", 409)
         body = request.get_json(silent=True) or {}
         mode = "full" if str(body.get("mode") or "").lower() == "full" else "quick"
         force = (
@@ -1335,6 +1460,8 @@ def create_app(config):
             return unauthorized
         if scans.snapshot().get("running"):
             return _error("A scan is already running", 409)
+        if artworks.snapshot().get("running"):
+            return _error("An artwork rebuild is already running", 409)
         try:
             job = rekeys.start()
             _log_operation("rekey_started", "success", actor="admin")
@@ -1348,6 +1475,30 @@ def create_app(config):
     def api_setup_rekey_status():
         return _json_response(rekeys.snapshot())
 
+    @app.post("/api/setup/artwork")
+    def api_setup_artwork():
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
+        if scans.snapshot().get("running"):
+            return _error("A scan is already running", 409)
+        if rekeys.snapshot().get("running"):
+            return _error("A ReKey is already running", 409)
+        if artworks.snapshot().get("running"):
+            return _error("An artwork rebuild is already running", 409)
+        try:
+            job = artworks.start()
+            _log_operation("artwork_rebuild_started", "success", actor="admin")
+            return _json_response({"job": job}, status=202)
+        except ReadOnlyError as exc:
+            return _error(str(exc), 403)
+        except RuntimeError as exc:
+            return _error(str(exc), 409)
+
+    @app.get("/api/setup/artwork")
+    def api_setup_artwork_status():
+        return _json_response(artworks.snapshot())
+
     @app.get("/api/scan")
     @app.get("/api/scan/status")
     def api_scan_status():
@@ -1360,6 +1511,8 @@ def create_app(config):
             return unauthorized
         if rekeys.snapshot().get("running"):
             return _error("A ReKey is already running", 409)
+        if artworks.snapshot().get("running"):
+            return _error("An artwork rebuild is already running", 409)
         body = request.get_json(silent=True) or {}
         try:
             job = scans.start({
@@ -1393,12 +1546,16 @@ def create_app(config):
         online = presence.touch(body.get("client"))
         scan = scans.snapshot()
         rekey = rekeys.snapshot()
+        artwork = artworks.snapshot()
         if rekey.get("running"):
             state = "rekeying"
             job = rekey
         elif scan.get("running"):
             state = "scanning"
             job = scan
+        elif artwork.get("running"):
+            state = "artwork"
+            job = artwork
         else:
             state = "ready"
             job = None

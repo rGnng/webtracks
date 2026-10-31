@@ -83,6 +83,8 @@
     adminAuthenticated: false,
     rekeyJob: null,
     rekeyTimer: null,
+    artworkJob: null,
+    artworkTimer: null,
     modalMode: null,
     confirmCallback: null,
     browserListVirtual: null,
@@ -847,6 +849,12 @@
         label = `Scanning · ${info.phase || "Working"}${percent}`;
       } else if (state === "rekeying") {
         label = `ReKeying · ${info.phase || "Working"}`;
+      } else if (state === "artwork") {
+        const total = Number(info.total) || 0;
+        const completed = Number(info.completed) || 0;
+        const percent = total > 0
+          ? ` ${Math.min(100, Math.round(completed / total * 100))}%` : "";
+        label = `Artwork · ${info.phase || "Working"}${percent}`;
       }
       el.statusSystem.textContent = label;
       el.statusSystem.classList.toggle("active", state !== "ready");
@@ -4165,6 +4173,11 @@
         scheduleScanPoll();
         return;
       }
+      if (info.artworkJob && info.artworkJob.running) {
+        renderArtworkProgress(info.artworkJob);
+        scheduleArtworkPoll();
+        return;
+      }
       renderSetup();
     } catch (error) {
       state.setupError = error.message;
@@ -4178,6 +4191,7 @@
     if (!state.adminAuthenticated) setAdminToken("");
     if (info && info.scan) state.scanJob = info.scan;
     if (info && info.rekey) state.rekeyJob = info.rekey;
+    if (info && info.artworkJob) state.artworkJob = info.artworkJob;
     if (info && ["uuid", "base64url"].includes(info.urlIdFormat)) {
       state.urlIdFormat = info.urlIdFormat;
     }
@@ -4250,7 +4264,8 @@
     const readOnly = Boolean(info.readOnly ?? state.readOnly);
     const scan = state.scanJob || info.scan || {};
     const rekey = state.rekeyJob || info.rekey || {};
-    const busy = Boolean(scan.running || rekey.running);
+    const artwork = state.artworkJob || info.artworkJob || {};
+    const busy = Boolean(scan.running || rekey.running || artwork.running);
     const enabled = state.adminAuthenticated && !readOnly && !busy;
     const disabled = enabled ? "" : "disabled";
     const settingsEnabled = state.adminAuthenticated && !readOnly;
@@ -4384,6 +4399,10 @@
               <button class="secondary-button" type="button"
                       data-action="setup-full-scan" ${disabled}>
                 Full Scan
+              </button>
+              <button class="secondary-button" type="button"
+                      data-action="setup-rebuild-artwork" ${disabled}>
+                Rebuild Artwork
               </button>
               <button class="danger-button" type="button"
                       data-action="setup-rekey" ${disabled}>
@@ -4959,6 +4978,143 @@
       try { localStorage.removeItem(key); } catch (_) {}
     }
     window.location.reload();
+  }
+
+  async function startSetupArtwork() {
+    if (!state.adminAuthenticated) {
+      state.setupError = "Log in to rebuild artwork.";
+      renderSetup();
+      return;
+    }
+    state.modalMode = "setup";
+    state.setupOpen = true;
+    el.modalRoot.classList.remove("hidden");
+    el.modalRoot.innerHTML = `
+      <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Setup">
+        <div class="sheet-header">
+          <img class="app-mark-small" src="/static/app-icon.svg" alt="">
+          <div>
+            <div class="sheet-title">Rebuild Artwork</div>
+            <div class="sheet-subtitle">Starting artwork rebuild…</div>
+          </div>
+          <button class="sheet-close" type="button" data-action="close-modal"
+                  title="Close">×</button>
+        </div>
+        <div class="sheet-body">
+          <div class="center-state">
+            <div class="spinner"></div>
+            <div class="state-note">Preparing cover cache…</div>
+          </div>
+        </div>
+      </div>`;
+    try {
+      const data = await api("/api/setup/artwork", {
+        method: "POST",
+        headers: adminHeaders(),
+      });
+      state.artworkJob = data.job;
+      renderArtworkProgress(data.job);
+      refreshSystemStatus();
+      scheduleArtworkPoll();
+    } catch (error) {
+      if (error.status === 401) {
+        setAdminToken("");
+        state.adminAuthenticated = false;
+        state.setupError = "Session expired. Enter the admin password again.";
+        renderSetup();
+        return;
+      }
+      toast(error.message, { error: true });
+      openSetupModal();
+    }
+  }
+
+  function renderArtworkProgress(job) {
+    state.modalMode = "setup";
+    state.setupOpen = true;
+    el.modalRoot.classList.remove("hidden");
+    const running = Boolean(job.running);
+    const phase = job.phase || "Rebuilding Artwork";
+    const completed = Number(job.completed) || 0;
+    const total = Number(job.total) || 0;
+    const percent = total > 0 ? clamp(completed / total, 0, 1) : 0;
+    const errors = (job.errors || []).slice(0, 8);
+    const summary = job.summary || null;
+    const progressClass = total > 0 ? "" : "indeterminate";
+    let actions;
+    if (running) {
+      actions = '<button class="secondary-button" type="button" data-action="close-modal">Hide</button>';
+    } else if (job.phase === "Error") {
+      actions = '<button class="secondary-button" type="button" data-action="setup-back">Back to Setup</button>'
+        + '<button class="secondary-button" type="button" data-action="close-modal">Close</button>';
+    } else {
+      actions = '<button class="secondary-button" type="button" data-action="setup-back">Back to Setup</button>'
+        + '<button class="primary-button" type="button" data-action="artwork-reload">Reload Player</button>';
+    }
+    let summaryHtml = "";
+    if (!running && summary) {
+      summaryHtml = `
+        <div class="field-help">
+          ${Number(summary.artwork || 0).toLocaleString()} covers written ·
+          ${Number(summary.missing || 0).toLocaleString()} albums without art ·
+          ${Number(summary.albums || 0).toLocaleString()} albums checked
+        </div>`;
+    }
+    el.modalRoot.innerHTML = `
+      <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Setup">
+        <div class="sheet-header">
+          <img class="app-mark-small" src="/static/app-icon.svg" alt="">
+          <div>
+            <div class="sheet-title">${running ? "Rebuilding Artwork" : job.phase === "Error" ? "Artwork Rebuild Failed" : "Artwork Rebuilt"}</div>
+            <div class="sheet-subtitle">${running
+              ? "Re-extracting covers using the configured size and quality."
+              : "Reload the player to fetch the new cached covers."}</div>
+          </div>
+          <button class="sheet-close" type="button" data-action="close-modal"
+                  title="Close">×</button>
+        </div>
+        <div class="sheet-body">
+          <div class="scan-progress">
+            <div class="scan-progress-head">
+              ${running ? '<span class="spinner"></span>' : ""}
+              <span>${esc(phase)}</span>
+              <span class="tabular" style="margin-left:auto;color:var(--text-2)">
+                ${total > 0 ? `${completed.toLocaleString()} / ${total.toLocaleString()}` : ""}
+              </span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill ${progressClass}" style="${total > 0 ? `width:${(percent * 100).toFixed(1)}%` : ""}"></div>
+            </div>
+            <div class="scan-progress-detail">${esc(job.message || "")}</div>
+            ${summaryHtml}
+          </div>
+          ${errors.length ? `<ul class="scan-error-list">${errors.map((error) => `<li>${esc(error)}</li>`).join("")}</ul>` : ""}
+          <div class="sheet-actions">${actions}</div>
+        </div>
+      </div>`;
+  }
+
+  function scheduleArtworkPoll() {
+    if (state.artworkTimer) clearTimeout(state.artworkTimer);
+    state.artworkTimer = setTimeout(pollArtwork, 650);
+  }
+
+  async function pollArtwork() {
+    state.artworkTimer = null;
+    if (!state.setupOpen) return;
+    try {
+      const job = await api("/api/setup/artwork");
+      state.artworkJob = job;
+      if (state.setupOpen && state.modalMode === "setup") {
+        renderArtworkProgress(job);
+      }
+      refreshSystemStatus();
+      if (job.running) scheduleArtworkPoll();
+    } catch (error) {
+      toast(`Artwork rebuild status unavailable: ${error.message}`, {
+        error: true,
+      });
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -5733,6 +5889,10 @@
         startSetupScan("full");
       } else if (action === "setup-rekey") {
         promptSetupRekey();
+      } else if (action === "setup-rebuild-artwork") {
+        startSetupArtwork();
+      } else if (action === "artwork-reload") {
+        window.location.reload();
       } else if (action === "setup-save-settings") {
         saveSetupSettings();
       } else if (action === "setup-change-password") {

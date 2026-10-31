@@ -459,15 +459,13 @@ def read_metadata(path):
 # Artwork extraction and cache writing
 
 
-def extract_artwork(track):
-    if not track.has_artwork:
-        return None
-    if Path(track.path).suffix.lower() == ".flac":
-        return _flac_picture(track.path)
+def extract_artwork_path(path):
+    if Path(path).suffix.lower() == ".flac":
+        return _flac_picture(path)
     if not shutil.which("ffmpeg"):
         return None
     base = [
-        "ffmpeg", "-nostdin", "-v", "error", "-i", track.path,
+        "ffmpeg", "-nostdin", "-v", "error", "-i", path,
         "-map", "0:v:0", "-frames:v", "1",
     ]
     for codec in ("copy", "mjpeg"):
@@ -483,6 +481,12 @@ def extract_artwork(track):
         if proc.returncode == 0 and proc.stdout:
             return proc.stdout
     return None
+
+
+def extract_artwork(track):
+    if not track.has_artwork:
+        return None
+    return extract_artwork_path(track.path)
 
 
 def write_artwork_cache(
@@ -687,6 +691,86 @@ def _write_artwork(tracks, cache_dir, jpeg_quality, progress=None,
                     "Writing Artwork", done, total, "%d covers" % written
                 )
     return written, errors
+
+
+def rebuild_artwork_cache(albums, cache_dir, jpeg_quality=DEFAULT_JPEG_QUALITY,
+                          cover_size=DEFAULT_COVER_SIZE, progress=None):
+    """Rewrite cached covers from existing song rows without touching the DB.
+
+    ``albums`` are catalog album dictionaries containing ``id`` and ``songs``;
+    each song needs an ``_path``.  Albums without an extractable cover are
+    counted as missing rather than treated as errors.
+    """
+
+    albums = [album for album in (albums or []) if album.get("id")]
+    total = len(albums)
+    if not total:
+        return {"albums": 0, "artwork": 0, "missing": 0, "errors": []}
+
+    written = 0
+    missing = 0
+    errors = []
+    done = 0
+
+    def report(message):
+        if progress:
+            progress("Rebuilding Artwork", done, total, message)
+
+    def process(album):
+        cached_path = os.path.join(
+            cache_dir, "%s.jpg" % album["id"].upper()
+        )
+        try:
+            with open(cached_path, "rb") as handle:
+                cached = handle.read()
+        except OSError:
+            cached = None
+        if cached and write_artwork_cache(
+            cached, album["id"], cache_dir, jpeg_quality, cover_size
+        ):
+            return True
+        for song in album.get("songs") or []:
+            path = song.get("_path") or ""
+            if not path:
+                continue
+            data = extract_artwork_path(path)
+            if data:
+                return bool(write_artwork_cache(
+                    data, album["id"], cache_dir, jpeg_quality, cover_size
+                ))
+        return None
+
+    with ThreadPoolExecutor(max_workers=ARTWORK_WORKERS) as executor:
+        futures = {
+            executor.submit(process, album): album
+            for album in albums
+        }
+        for future in as_completed(futures):
+            album = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                errors.append(
+                    "Artwork failed for %s: %s" % (album["id"], exc)
+                )
+                result = False
+            if result is True:
+                written += 1
+            elif result is None:
+                missing += 1
+            else:
+                errors.append(
+                    "Could not write artwork for %s" % album["id"]
+                )
+            done += 1
+            report("%d covers" % written)
+
+    return {
+        "albums": total,
+        "artwork": written,
+        "missing": missing,
+        "errors": errors,
+    }
 
 
 def _remove_cached_artwork(album_ids, cache_dir):

@@ -24,27 +24,32 @@ class TranscodeCacheTests(unittest.TestCase):
         cache._encode = lambda path, quality: payloads[path]
         return cache
 
-    def test_lru_evicts_least_recently_hit(self):
+    def test_entries_stay_until_a_new_item_overflows(self):
         payloads = {
             path: bytes([65 + index]) * 400
             for index, path in enumerate(self.paths)
         }
-        cache = self._cache(1000, payloads)
+        cache = self._cache(1200, payloads)
         cache.get_or_encode("id0", self.paths[0])
         cache.get_or_encode("id1", self.paths[1])
-        # Hit id0 so id1 becomes the least recently used entry.
         cache.get_or_encode("id0", self.paths[0])
         cache.get_or_encode("id2", self.paths[2])
         stats = cache.stats()
-        self.assertEqual(stats["entries"], 2)
-        self.assertEqual(stats["usedBytes"], 800)
-        self.assertEqual(stats["evictions"], 1)
+        self.assertEqual(stats["entries"], 3)
+        self.assertEqual(stats["usedBytes"], 1200)
+        self.assertEqual(stats["evictions"], 0)
+        self.assertEqual(stats["clears"], 0)
         self.assertEqual(stats["hits"], 1)
-        # id1 was evicted; id0 and id2 remain in LRU order.
-        self.assertEqual(
-            [key[0] for key in cache._cache.keys()],
-            ["id0", "id2"],
-        )
+
+        # The fourth item cannot fit, so the cache is cleared and only the new
+        # item remains.
+        cache.get_or_encode("id3", self.paths[3])
+        stats = cache.stats()
+        self.assertEqual(stats["entries"], 1)
+        self.assertEqual(stats["usedBytes"], 400)
+        self.assertEqual(stats["evictions"], 3)
+        self.assertEqual(stats["clears"], 1)
+        self.assertEqual([key[0] for key in cache._cache.keys()], ["id3"])
 
     def test_zero_budget_serves_without_retaining(self):
         cache = self._cache(0, {self.paths[0]: b"z" * 10})
