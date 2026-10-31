@@ -695,11 +695,13 @@ def _write_artwork(tracks, cache_dir, jpeg_quality, progress=None,
 
 def rebuild_artwork_cache(albums, cache_dir, jpeg_quality=DEFAULT_JPEG_QUALITY,
                           cover_size=DEFAULT_COVER_SIZE, progress=None):
-    """Rewrite cached covers from existing song rows without touching the DB.
+    """Re-extract cached covers from media files without touching the DB.
 
     ``albums`` are catalog album dictionaries containing ``id`` and ``songs``;
-    each song needs an ``_path``.  Albums without an extractable cover are
-    counted as missing rather than treated as errors.
+    each song needs an ``_path``.  Existing cover files are never used as the
+    source: every cover is regenerated from the audio file with the requested
+    JPEG quality and size.  Albums without an extractable cover keep no stale
+    cache file.  Orphaned ``*.jpg`` covers are removed.
     """
 
     albums = [album for album in (albums or []) if album.get("id")]
@@ -717,27 +719,27 @@ def rebuild_artwork_cache(albums, cache_dir, jpeg_quality=DEFAULT_JPEG_QUALITY,
             progress("Rebuilding Artwork", done, total, message)
 
     def process(album):
-        cached_path = os.path.join(
-            cache_dir, "%s.jpg" % album["id"].upper()
-        )
-        try:
-            with open(cached_path, "rb") as handle:
-                cached = handle.read()
-        except OSError:
-            cached = None
-        if cached and write_artwork_cache(
-            cached, album["id"], cache_dir, jpeg_quality, cover_size
-        ):
-            return True
+        target = os.path.join(cache_dir, "%s.jpg" % album["id"].upper())
         for song in album.get("songs") or []:
             path = song.get("_path") or ""
             if not path:
                 continue
             data = extract_artwork_path(path)
             if data:
-                return bool(write_artwork_cache(
+                written = bool(write_artwork_cache(
                     data, album["id"], cache_dir, jpeg_quality, cover_size
                 ))
+                if not written:
+                    try:
+                        os.remove(target)
+                    except OSError:
+                        pass
+                return written
+        # Do not leave a stale cover behind when the source no longer has art.
+        try:
+            os.remove(target)
+        except OSError:
+            pass
         return None
 
     with ThreadPoolExecutor(max_workers=ARTWORK_WORKERS) as executor:
@@ -765,10 +767,27 @@ def rebuild_artwork_cache(albums, cache_dir, jpeg_quality=DEFAULT_JPEG_QUALITY,
             done += 1
             report("%d covers" % written)
 
+    removed = 0
+    known_ids = {str(album["id"]).upper() for album in albums}
+    try:
+        names = os.listdir(cache_dir)
+    except OSError:
+        names = []
+    for name in names:
+        stem, extension = os.path.splitext(name)
+        if extension.lower() != ".jpg" or stem.upper() in known_ids:
+            continue
+        try:
+            os.remove(os.path.join(cache_dir, name))
+            removed += 1
+        except OSError:
+            pass
+
     return {
         "albums": total,
         "artwork": written,
         "missing": missing,
+        "orphansRemoved": removed,
         "errors": errors,
     }
 

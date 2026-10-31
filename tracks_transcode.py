@@ -176,9 +176,15 @@ class TranscodeCache:
                 self.ffmpeg,
                 "-nostdin", "-v", "error", "-y",
                 "-i", source_path,
+                # Audio only: drop artwork/video, subtitles, data streams,
+                # chapters, and all source tags.  Bitexact flags also stop the
+                # muxer from writing an encoder/version tag.
                 "-map", "0:a:0",
                 "-vn", "-sn", "-dn",
                 "-map_metadata", "-1",
+                "-map_chapters", "-1",
+                "-fflags", "+bitexact",
+                "-flags:a", "+bitexact",
                 "-c:a", spec["codec"],
             ]
             if spec.get("profile"):

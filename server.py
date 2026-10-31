@@ -637,6 +637,7 @@ class ArtworkManager:
                 "albums": result.get("albums", 0),
                 "artwork": result.get("artwork", 0),
                 "missing": result.get("missing", 0),
+                "orphansRemoved": result.get("orphansRemoved", 0),
                 "errors": errors,
             }
             self._update(

@@ -318,33 +318,76 @@ class ArtworkTests(unittest.TestCase):
             ) as image:
                 self.assertEqual(image.size, (300, 200))
 
-    def test_rebuild_rewrites_existing_cached_covers(self):
+    def test_rebuild_reads_media_and_replaces_cached_cover(self):
         with tempfile.TemporaryDirectory() as root:
-            source = Image.new("RGB", (900, 600), (20, 80, 160))
-            buf = os.path.join(root, "source.png")
-            source.save(buf)
-            with open(buf, "rb") as handle:
-                data = handle.read()
+            old_source = Image.new("RGB", (900, 600), (20, 80, 160))
+            old_buf = os.path.join(root, "old.png")
+            old_source.save(old_buf)
+            with open(old_buf, "rb") as handle:
+                old_data = handle.read()
+            new_source = Image.new("RGB", (840, 560), (210, 30, 20))
+            new_buf = os.path.join(root, "new.png")
+            new_source.save(new_buf)
+            with open(new_buf, "rb") as handle:
+                new_data = handle.read()
             album_id = stable_uuid("album|rebuild")
             cache = os.path.join(root, "Artwork")
             self.assertTrue(
-                write_artwork_cache(data, album_id, cache, 80, 500)
+                write_artwork_cache(old_data, album_id, cache, 80, 500)
             )
-            result = rebuild_artwork_cache(
-                [{
-                    "id": album_id,
-                    "songs": [{"_path": "/missing/audio.flac"}],
-                }],
-                cache,
-                jpeg_quality=70,
-                cover_size=300,
-            )
+            with mock.patch(
+                "tracks_scanner.extract_artwork_path",
+                return_value=new_data,
+            ) as extract:
+                result = rebuild_artwork_cache(
+                    [{
+                        "id": album_id,
+                        "songs": [{"_path": "/media/audio.flac"}],
+                    }],
+                    cache,
+                    jpeg_quality=70,
+                    cover_size=300,
+                )
+            extract.assert_called_once_with("/media/audio.flac")
             self.assertEqual(result["artwork"], 1)
             self.assertEqual(result["missing"], 0)
             with Image.open(
                 os.path.join(cache, album_id + ".jpg")
             ) as image:
                 self.assertEqual(image.size, (300, 200))
+                red, green, blue = image.convert("RGB").getpixel((10, 10))
+                self.assertGreater(red, green)
+                self.assertGreater(red, blue)
+
+    def test_rebuild_discards_cover_when_media_has_no_art(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Image.new("RGB", (500, 500), (20, 80, 160))
+            buf = os.path.join(root, "source.png")
+            source.save(buf)
+            with open(buf, "rb") as handle:
+                data = handle.read()
+            album_id = stable_uuid("album|rebuild-missing")
+            cache = os.path.join(root, "Artwork")
+            target = os.path.join(cache, album_id + ".jpg")
+            self.assertTrue(
+                write_artwork_cache(data, album_id, cache, 80, 500)
+            )
+            self.assertTrue(os.path.isfile(target))
+            with mock.patch(
+                "tracks_scanner.extract_artwork_path", return_value=None
+            ):
+                result = rebuild_artwork_cache(
+                    [{
+                        "id": album_id,
+                        "songs": [{"_path": "/media/audio.flac"}],
+                    }],
+                    cache,
+                    jpeg_quality=70,
+                    cover_size=300,
+                )
+            self.assertEqual(result["artwork"], 0)
+            self.assertEqual(result["missing"], 1)
+            self.assertFalse(os.path.exists(target))
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required")

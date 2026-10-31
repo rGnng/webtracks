@@ -19,7 +19,8 @@ queue overlay, and a 24pt status bar.
   Transcode output goes into a shared in-memory cache (512 MB by default);
   future qualities such as MP3 share the same capacity. Entries stay for the
   process lifetime and are cleared only when a new item would overflow the
-  budget.
+  budget. Transcodes contain only the audio stream: artwork, chapters, and
+  source tags are stripped before transmission.
 - Opens in the Albums view with an album grid, album detail, Songs table,
   Artists, and a Playlists overview containing Stared and user playlists. The
   Genres view is kept in the code but has no visible entry point.
@@ -153,6 +154,10 @@ item cannot fit, the whole cache is cleared and the new item is retained. The
 cache never writes into `data/` and is naturally cleared when the server
 restarts. The status bar shows total usage and entry count, and hovering reveals
 a per-quality breakdown.
+
+Transcoded responses contain one audio stream only. The encoder drops attached
+artwork, video/subtitle/data streams, chapters, and all source metadata tags;
+bitexact flags also prevent the muxer from writing encoder/version tags.
 
 Paths may use `~`. Command-line arguments take precedence over the config file:
 

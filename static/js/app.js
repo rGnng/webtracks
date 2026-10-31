@@ -5058,6 +5058,7 @@
           ${Number(summary.artwork || 0).toLocaleString()} covers written ·
           ${Number(summary.missing || 0).toLocaleString()} albums without art ·
           ${Number(summary.albums || 0).toLocaleString()} albums checked
+          ${summary.orphansRemoved ? ` · ${Number(summary.orphansRemoved).toLocaleString()} stale covers removed` : ""}
         </div>`;
     }
     el.modalRoot.innerHTML = `

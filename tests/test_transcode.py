@@ -1,7 +1,11 @@
+import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
+
+from PIL import Image
 
 from tracks_transcode import DEFAULT_QUALITY, TranscodeCache
 
@@ -168,6 +172,64 @@ class TranscodeQualityTests(unittest.TestCase):
         self.assertGreaterEqual(cache["hits"], 1)
         self.assertEqual(cache["qualities"][0]["entries"], 1)
         self.assertEqual(cache["qualities"][0]["usedBytes"], full_length)
+
+    def test_aac_transcode_drops_artwork_and_source_tags(self):
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            self.skipTest("ffmpeg and ffprobe are required")
+        cover_path = os.path.join(self.root, "cover.png")
+        Image.new("RGB", (600, 600), (200, 30, 30)).save(cover_path)
+        flac_path = os.path.join(self.root, "tagged.flac")
+        subprocess.run(
+            [
+                "ffmpeg", "-nostdin", "-v", "error", "-y",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                "-i", cover_path,
+                "-map", "0:a", "-map", "1:v",
+                "-c:a", "flac", "-c:v", "png",
+                "-disposition:v", "attached_pic",
+                "-metadata", "title=Tagged Title",
+                "-metadata", "artist=Tagged Artist",
+                "-metadata", "album=Tagged Album",
+                "-metadata", "comment=SECRETCOMMENT",
+                flac_path,
+            ],
+            check=True,
+        )
+        cache = TranscodeCache(max_bytes=0)
+        data, _etag = cache.get_or_encode(
+            "tagged", flac_path, DEFAULT_QUALITY
+        )
+        output_path = os.path.join(self.root, "tagged.m4a")
+        with open(output_path, "wb") as handle:
+            handle.write(data)
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries",
+                "format_tags:stream=index,codec_type:stream_tags",
+                "-of", "json", output_path,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+        )
+        payload = json.loads(probe.stdout.decode("utf-8"))
+        self.assertEqual(
+            [stream["codec_type"] for stream in payload["streams"]],
+            ["audio"],
+        )
+        format_tags = {
+            key.lower(): value
+            for key, value in (payload.get("format", {}).get("tags") or {}).items()
+        }
+        for key in ("title", "artist", "album", "comment"):
+            self.assertNotIn(key, format_tags)
+        for stream in payload["streams"]:
+            tags = {
+                key.lower(): value
+                for key, value in (stream.get("tags") or {}).items()
+            }
+            for key in ("title", "artist", "album", "comment"):
+                self.assertNotIn(key, tags)
 
 
 if __name__ == "__main__":
