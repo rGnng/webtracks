@@ -19,7 +19,9 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from server import Config, create_app, main, _client_ip  # noqa: E402
+from server import (  # noqa: E402
+    Config, PresenceTracker, create_app, main, _client_ip,
+)
 from tracks_config import (  # noqa: E402
     DEFAULT_ADMIN_PASSWORD_SHA1,
     DEFAULT_SETTINGS,
@@ -923,16 +925,20 @@ class ApiTests(unittest.TestCase):
 
     def test_status_presence_and_ready_state(self):
         first = self.client.post(
-            "/api/status", json={"client": "client-a"}
+            "/api/status",
+            headers={"X-Forwarded-For": "203.0.113.10"},
         ).get_json()
         self.assertEqual(first["online"], 1)
         self.assertEqual(first["state"], "ready")
         second = self.client.post(
-            "/api/status", json={"client": "client-b"}
+            "/api/status",
+            headers={"X-Forwarded-For": "203.0.113.11"},
         ).get_json()
         self.assertEqual(second["online"], 2)
         repeat = self.client.post(
-            "/api/status", json={"client": "client-a"}
+            "/api/status",
+            json={"client": "ignored-client-id"},
+            headers={"X-Forwarded-For": "203.0.113.10"},
         ).get_json()
         self.assertEqual(repeat["online"], 2)
 
@@ -1523,6 +1529,19 @@ class ClientIpTests(unittest.TestCase):
         self.assertEqual(
             self.client_ip(remote_addr="192.0.2.55"),
             "192.0.2.55",
+        )
+
+
+class PresenceTrackerTests(unittest.TestCase):
+    def test_presence_is_keyed_by_ip_and_bounded(self):
+        tracker = PresenceTracker(ttl=30, max_entries=2)
+        self.assertEqual(tracker.touch("192.0.2.1"), 1)
+        self.assertEqual(tracker.touch("192.0.2.2"), 2)
+        self.assertEqual(tracker.touch("192.0.2.1"), 2)
+        self.assertEqual(tracker.touch("192.0.2.3"), 2)
+        self.assertEqual(
+            tracker.counts_by_ip(),
+            {"192.0.2.1": 1, "192.0.2.3": 1},
         )
 
 

@@ -59,10 +59,11 @@ queue overlay, and a 24pt status bar.
   repeated Range requests for one song count once and the UI stays silent when
   the limit is reached.
 - In-memory usage statistics: the six summary counters are visible in Setup
-  without logging in, while per-IP details with current online connection
-  counts, transferred bytes, songs played, playlist actions, scans/ReKey/
+  without logging in, while per-IP details with current online status,
+  transferred bytes, songs played, playlist actions, scans/ReKey/
   artwork jobs, rate-limit events, and blocked brute-force logins appear after
-  admin login. Statistics reset when the server restarts.
+  admin login. Presence is keyed by source IP, so multiple tabs on one machine
+  count once. Statistics reset when the server restarts.
 - All frontend assets live under `static/`; there are no CDN requests.
 
 ## Requirements
@@ -496,7 +497,7 @@ What is implemented:
   volume is fixed at 100%; the waveform button selects a configured audio
   quality (default AAC · 128 kbps);
 - the status bar shows the Setup gear followed by Ready / Scanning / ReKeying
-  progress, the online-client count with a globe icon, and Server Cache usage;
+  progress, the online-IP count with a globe icon, and Server Cache usage;
 - live AAC transcoding for every configured quality and a shared in-memory
   process-lifetime cache, with total usage and entry count in the status bar;
 - album cards, album paging, album detail, the virtualized Songs table, and a

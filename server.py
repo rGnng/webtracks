@@ -9,6 +9,7 @@ requests.
 """
 
 import argparse
+import collections
 import datetime
 import gzip
 import hashlib
@@ -251,44 +252,48 @@ class Config:
 
 
 class PresenceTracker:
-    """Approximate count of open web clients using a heartbeat TTL."""
+    """Approximate count of open web clients using a heartbeat TTL.
 
-    def __init__(self, ttl=30):
+    Presence is keyed by source IP. Multiple tabs on one machine count once,
+    which keeps the map bounded by the number of active addresses.
+    """
+
+    def __init__(self, ttl=30, max_entries=10000):
         self.ttl = max(5, int(ttl))
-        self._clients = {}
+        self.max_entries = max(1, int(max_entries))
+        self._clients = collections.OrderedDict()
         self._lock = threading.Lock()
 
     def _prune(self, now):
-        self._clients = {
-            key: client for key, client in self._clients.items()
-            if now - client["seen"] <= self.ttl
-        }
+        while self._clients:
+            address, client = next(iter(self._clients.items()))
+            if now - client["seen"] <= self.ttl:
+                break
+            self._clients.popitem(last=False)
 
-    def touch(self, client_id=None, address=""):
+    def touch(self, address=""):
         now = time.time()
+        address = str(address or "")
         with self._lock:
             self._prune(now)
-            client_id = str(client_id or "").strip()[:128]
-            if client_id:
-                self._clients[client_id] = {
-                    "seen": now,
-                    "ip": str(address or ""),
-                }
+            if address:
+                self._clients[address] = {"seen": now}
+                self._clients.move_to_end(address)
+                while len(self._clients) > self.max_entries:
+                    self._clients.popitem(last=False)
             return len(self._clients)
 
     def count(self):
-        return self.touch(None)
+        now = time.time()
+        with self._lock:
+            self._prune(now)
+            return len(self._clients)
 
     def counts_by_ip(self):
         now = time.time()
         with self._lock:
             self._prune(now)
-            counts = {}
-            for client in self._clients.values():
-                address = client.get("ip") or ""
-                if address:
-                    counts[address] = counts.get(address, 0) + 1
-            return counts
+            return {address: 1 for address in self._clients}
 
 
 class PlayTracker:
@@ -1823,8 +1828,7 @@ def create_app(config):
 
     @app.post("/api/status")
     def api_status():
-        body = request.get_json(silent=True) or {}
-        online = presence.touch(body.get("client"), _client_ip())
+        online = presence.touch(_client_ip())
         scan = scans.snapshot()
         rekey = rekeys.snapshot()
         artwork = artworks.snapshot()

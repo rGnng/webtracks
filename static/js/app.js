@@ -828,29 +828,11 @@
     return `/api/audio/${encodeURIComponent(song.id)}?${query.join("&")}`;
   }
 
-  const CLIENT_ID_KEY = "tracksWeb.clientId.v1";
-
-  function presenceClientId() {
-    try {
-      let value = localStorage.getItem(CLIENT_ID_KEY);
-      if (!value) {
-        value = (window.crypto && window.crypto.randomUUID)
-          ? window.crypto.randomUUID()
-          : `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        localStorage.setItem(CLIENT_ID_KEY, value);
-      }
-      return value;
-    } catch (_) {
-      return `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    }
-  }
-
   async function refreshSystemStatus() {
     try {
       const info = await api("/api/status", {
         method: "POST",
         headers: adminHeaders(),
-        body: JSON.stringify({ client: presenceClientId() }),
       });
       if (!info) return;
       const online = Math.max(0, Number(info.online) || 0);
