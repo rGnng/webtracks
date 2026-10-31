@@ -530,6 +530,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(fallback.status_code, 200)
         self.assertEqual(fallback.mimetype, "image/svg+xml")
 
+    def test_bootstrap_hides_filesystem_paths(self):
+        boot = self.client.get("/api/bootstrap").get_json()
+        self.assertNotIn("musicDirs", boot)
+        self.assertNotIn("database", boot)
+        self.assertTrue(boot["libraries"])
+        for library in boot["libraries"]:
+            self.assertNotIn("path", library)
+
     def test_audio_rate_limit_is_reported_and_probeable(self):
         app = self.client.application
         limiter = app.extensions["tracks_rate_limit"]
@@ -597,6 +605,22 @@ class ApiTests(unittest.TestCase):
             json={"name": "API Playlist"},
             headers={"Authorization": "Bearer " + token},
         ).get_json()["playlist"]
+        self.assertEqual(
+            self.client.patch(
+                "/api/playlists/" + created["id"],
+                json={"name": "Anonymous Rename"},
+            ).status_code,
+            401,
+        )
+        renamed = self.client.patch(
+            "/api/playlists/" + created["id"],
+            json={"name": "Renamed Playlist"},
+            headers={"Authorization": "Bearer " + token},
+        )
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(
+            renamed.get_json()["playlist"]["name"], "Renamed Playlist"
+        )
         response = self.client.post(
             "/api/playlists/%s/songs" % created["id"],
             json={"songIds": [self.song_id]},
@@ -644,13 +668,17 @@ class ApiTests(unittest.TestCase):
             if not job.get("running"):
                 break
             time.sleep(0.05)
-            job = client.get("/api/scan").get_json()
+            job = client.get("/api/scan", headers=headers).get_json()
         self.assertFalse(job["running"])
         self.assertEqual(job["phase"], "Done")
         self.assertEqual(
             job["summary"]["libraries"],
             [os.path.realpath(self.music)],
         )
+        public_job = client.get("/api/scan").get_json()
+        self.assertIsNone(public_job["summary"])
+        self.assertEqual(public_job["errors"], [])
+        self.assertEqual(public_job["message"], "")
 
     def test_setup_rekey_requires_admin_and_finishes(self):
         self.assertEqual(
@@ -667,11 +695,17 @@ class ApiTests(unittest.TestCase):
             if not job.get("running"):
                 break
             time.sleep(0.05)
-            job = self.client.get("/api/setup/rekey").get_json()
+            job = self.client.get(
+                "/api/setup/rekey", headers=headers
+            ).get_json()
         self.assertFalse(job["running"])
         self.assertEqual(job["phase"], "Done")
         self.assertEqual(job["summary"]["songs"], 1)
         self.assertTrue(job["summary"]["backup"])
+        public_job = self.client.get("/api/setup/rekey").get_json()
+        self.assertIsNone(public_job["summary"])
+        self.assertEqual(public_job["errors"], [])
+        self.assertEqual(public_job["message"], "")
         songs = self.client.get("/api/songs").get_json()["songs"]
         self.assertEqual(len(songs), 1)
 
@@ -752,12 +786,18 @@ class ApiTests(unittest.TestCase):
                 if not job.get("running"):
                     break
                 time.sleep(0.05)
-                job = self.client.get("/api/setup/artwork").get_json()
+                job = self.client.get(
+                    "/api/setup/artwork", headers=headers
+                ).get_json()
         self.assertFalse(job["running"])
         self.assertEqual(job["phase"], "Done")
         self.assertEqual(job["summary"]["albums"], 2)
         self.assertEqual(job["summary"]["artwork"], 1)
         self.assertEqual(job["summary"]["missing"], 1)
+        public_job = self.client.get("/api/setup/artwork").get_json()
+        self.assertIsNone(public_job["summary"])
+        self.assertEqual(public_job["errors"], [])
+        self.assertEqual(public_job["message"], "")
 
     def test_rekey_updates_namespace_in_database_only(self):
         config_path = os.path.join(self.root, "config.json")
@@ -1356,6 +1396,23 @@ class ClientIpTests(unittest.TestCase):
         with self.app.test_request_context(headers=headers or {},
                                            environ_base=environ):
             return _client_ip()
+
+    def test_cloudflare_connecting_ip_takes_priority(self):
+        self.assertEqual(
+            self.client_ip({
+                "CF-Connecting-IP": "203.0.113.20",
+                "X-Forwarded-For": "198.51.100.1",
+                "X-Real-IP": "198.51.100.2",
+            }),
+            "203.0.113.20",
+        )
+        self.assertEqual(
+            self.client_ip({
+                "CF-Connecting-IP": "unknown",
+                "X-Forwarded-For": "198.51.100.1",
+            }),
+            "198.51.100.1",
+        )
 
     def test_forwarded_for_takes_priority(self):
         self.assertEqual(

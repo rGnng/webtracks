@@ -284,6 +284,8 @@ and ReKey require signing in first:
   Locks and failure counters are in memory only
 - While signed out, library folders, action buttons, and settings are hidden or
   greyed out
+- Scan, ReKey, and artwork progress is visible while signed out, but file paths,
+  error details, and result summaries require admin login
 - **Usage statistics** sits above the bottom **Admin** section. Logged-out
   visitors see the six summary counters; admin login reveals the per-client
   table and maintenance counters
@@ -333,21 +335,26 @@ Two log files are written under `logs_dir`:
 - `runtime.log` records startup, scan, ReKey, and server errors. Its threshold is
   `log_level` (default `INFO`).
 - `operations.log` records admin and library operations. `remoteIp` is the
-  client IP resolved from
+  client IP resolved from `CF-Connecting-IP` (Cloudflare Tunnel), then
   `X-Forwarded-For` (the leftmost valid entry), then `X-Real-IP`, then the
-  direct socket peer. `proxyIp` records the direct peer and `forwardedFor` the
-  raw `X-Forwarded-For` header. Each entry also includes a local timestamp,
-  action, result, user agent, HTTP method, path, and action-specific details.
-  It covers admin login/logout, password and URL-format changes, library ID
-  changes, scans, ReKey, and playlist changes.
+  direct socket peer. `proxyIp` records the direct peer, `forwardedFor` the
+  raw `X-Forwarded-For` header, and `cfConnectingIp` the raw Cloudflare
+  header. Each entry also includes a local timestamp, action, result, user
+  agent, HTTP method, path, and action-specific details. It covers admin
+  login/logout, password and URL-format changes, library ID changes, scans,
+  ReKey, and playlist changes.
 
 Both logs use `log_format`: `text` (default) writes timestamped key=value lines,
 while `json` writes one JSON object per line. Set it in `config.yaml` or with
 `WEBTRACKS_LOG_FORMAT`.
 
-> `X-Forwarded-For` is trusted. If the service is reachable directly as well as
-> through a proxy, keep `host: 127.0.0.1` and publish only through the proxy, or
-> restrict access to the proxy, so clients cannot spoof the logged IP.
+> `CF-Connecting-IP` and `X-Forwarded-For` are trusted. WebTracks reads
+> `CF-Connecting-IP` first, so Cloudflare Tunnel works even when nginx
+> overwrites `X-Forwarded-For` with `$remote_addr`; nginx forwards Cloudflare's
+> header by default. The `real_ip` block in the example is optional and only
+> makes `$remote_addr` accurate for nginx itself. If the service is reachable
+> directly as well as through a proxy, any client can spoof these headers; keep
+> the backend port restricted when the logged IP must be trustworthy.
 
 An example nginx configuration, including TLS, client-IP headers, and long-lived
 audio streaming, is in `nignx_reverse_proxy.conf`.
@@ -489,8 +496,9 @@ What is implemented:
   master-detail Artists view (the Genres view is kept in code but hidden);
 - a two-column Playlists view: Stared and playlists on the left, the selected
   playlist's songs on the right. Playlists can be created, renamed, and deleted.
-  Creating a playlist requires the Setup admin login; adding or removing songs
-  from existing playlists still works while signed out;
+  Creating and renaming a playlist require the Setup admin login; adding or
+  removing songs from existing playlists still works while signed out, and
+  deleting an entire playlist also remains available while signed out;
 - a virtualized queue overlay;
 - stars, play counts, and playlist create/update/delete. Context menus are
   single-level, and Add to Playlist uses a separate picker window;

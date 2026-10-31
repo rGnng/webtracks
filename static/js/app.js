@@ -840,6 +840,7 @@
     try {
       const info = await api("/api/status", {
         method: "POST",
+        headers: adminHeaders(),
         body: JSON.stringify({ client: presenceClientId() }),
       });
       if (!info) return;
@@ -1118,8 +1119,13 @@
       toast("The server is running in read-only mode", { error: true });
       return;
     }
-    if (mode === "create" && !state.adminAuthenticated) {
-      toast("Log in from Setup to create playlists.", { error: true });
+    if (!state.adminAuthenticated) {
+      toast(
+        mode === "create"
+          ? "Log in from Setup to create playlists."
+          : "Log in from Setup to rename playlists.",
+        { error: true },
+      );
       return;
     }
     state.modalMode = "playlist";
@@ -5100,7 +5106,9 @@
   async function pollScan() {
     state.scanTimer = null;
     try {
-      const job = await api("/api/scan");
+      const job = await api("/api/scan", {
+        headers: adminHeaders(),
+      });
       state.scanJob = job;
       if (state.setupOpen && state.modalMode === "setup") {
         renderScanProgress(job);
@@ -5192,7 +5200,9 @@
     state.rekeyTimer = null;
     if (!state.setupOpen) return;
     try {
-      const job = await api("/api/setup/rekey");
+      const job = await api("/api/setup/rekey", {
+        headers: adminHeaders(),
+      });
       state.rekeyJob = job;
       if (state.setupOpen && state.modalMode === "setup") {
         renderRekeyProgress(job);
@@ -5335,7 +5345,9 @@
     state.artworkTimer = null;
     if (!state.setupOpen) return;
     try {
-      const job = await api("/api/setup/artwork");
+      const job = await api("/api/setup/artwork", {
+        headers: adminHeaders(),
+      });
       state.artworkJob = job;
       if (state.setupOpen && state.modalMode === "setup") {
         renderArtworkProgress(job);

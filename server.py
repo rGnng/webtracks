@@ -744,6 +744,28 @@ def _error(message, status=400):
     return _json_response({"error": message}, status=status)
 
 
+def _public_job(job, authenticated):
+    """Return a background job snapshot without filesystem details.
+
+    Scan, ReKey, and artwork jobs keep absolute paths in ``message``,
+    ``errors``, and ``summary``.  Only admins need those details; public
+    clients get progress fields so the status bar and setup sheet still work.
+    """
+
+    if authenticated:
+        return job or {}
+    job = job or {}
+    return {
+        "running": bool(job.get("running")),
+        "phase": job.get("phase") or "",
+        "completed": int(job.get("completed") or 0),
+        "total": job.get("total"),
+        "message": "",
+        "errors": [],
+        "summary": None,
+    }
+
+
 def _valid_ip(value):
     """Return a normalized IP address, or an empty string."""
 
@@ -768,12 +790,15 @@ def _valid_ip(value):
 def _client_ip():
     """Resolve the client IP, preferring proxy headers over the socket peer.
 
-    ``X-Forwarded-For`` is checked first, leftmost entry first. ``X-Real-IP``
-    is a fallback, and ``request.remote_addr`` is the final fallback. Invalid
-    or empty values are ignored so a malformed proxy header cannot hide the
-    real source address.
+    ``CF-Connecting-IP`` (set by Cloudflare Tunnel) is checked first, then
+    ``X-Forwarded-For`` (leftmost entry first), then ``X-Real-IP``, and finally
+    ``request.remote_addr``. Invalid or empty values are ignored so a malformed
+    proxy header cannot hide the real source address.
     """
 
+    address = _valid_ip(request.headers.get("CF-Connecting-IP"))
+    if address:
+        return address
     forwarded = request.headers.get("X-Forwarded-For") or ""
     for part in forwarded.split(","):
         address = _valid_ip(part)
@@ -799,11 +824,15 @@ def _log_operation(action, result="ok", **details):
         ),
         "action": action,
         "result": result,
-        # remoteIp is the real client as seen through the reverse proxy.
+        # remoteIp is resolved from CF-Connecting-IP/X-Forwarded-For when
+        # present, otherwise from the direct socket peer.
         "remoteIp": client_ip,
         # proxyIp is the direct socket peer (usually the reverse proxy).
         "proxyIp": request.remote_addr or "",
         "forwardedFor": forwarded,
+        "cfConnectingIp": (
+            request.headers.get("CF-Connecting-IP") or ""
+        ).strip(),
         "userAgent": request.headers.get("User-Agent") or "",
         "method": request.method,
         "path": request.path,
@@ -975,24 +1004,33 @@ def create_app(config):
     def api_bootstrap():
         try:
             payload = catalog.bootstrap_payload()
-            payload["musicDirs"] = [
-                library["path"] for library in payload.get("libraries") or []
+            # Library roots and the database location are filesystem details.
+            # Admins can read them from /api/setup after logging in; the public
+            # player only needs identifiers and display names.
+            payload["libraries"] = [
+                {
+                    key: value
+                    for key, value in library.items()
+                    if key != "path"
+                }
+                for library in payload.get("libraries") or []
             ]
-            payload["database"] = config.database
             payload["albumSort"] = config.album_sort
             payload["albumSortDescending"] = config.album_sort_descending
             payload["urlIdFormat"] = config.url_id_format
             return _json_response(payload)
-        except Exception as exc:
-            return _error("Could not read the library: %s" % exc, 500)
+        except Exception:
+            runtime_log.exception("Could not read the library")
+            return _error("Could not read the library", 500)
 
     @app.get("/api/songs")
     def api_songs():
         scope = request.args.get("scope", "all")
         try:
             return _json_response(catalog.songs_payload(scope))
-        except Exception as exc:
-            return _error("Could not read songs: %s" % exc, 500)
+        except Exception:
+            runtime_log.exception("Could not read songs")
+            return _error("Could not read songs", 500)
 
     @app.get("/api/songs/<song_id>")
     def api_song(song_id):
@@ -1039,6 +1077,9 @@ def create_app(config):
 
     @app.patch("/api/playlists/<playlist_id>")
     def api_rename_playlist(playlist_id):
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
         body = request.get_json(silent=True) or {}
         before = catalog.playlist_by_id.get(playlist_id) or {}
         try:
@@ -1046,9 +1087,7 @@ def create_app(config):
                 playlist_id, body.get("name", "")
             )
             _log_operation(
-                "playlist_renamed", "success",
-                actor=("admin" if admin_auth.is_authenticated(_admin_token())
-                       else "anonymous"),
+                "playlist_renamed", "success", actor="admin",
                 playlistId=playlist_id,
                 oldName=before.get("name"),
                 newName=playlist["name"],
@@ -1240,8 +1279,11 @@ def create_app(config):
                 )
             except FileNotFoundError:
                 return _error("Audio file disappeared while encoding", 404)
-            except (TranscodeError, OSError) as exc:
-                return _error("Could not transcode audio: %s" % exc, 500)
+            except (TranscodeError, OSError):
+                runtime_log.exception(
+                    "Could not transcode audio for song %s", song_id
+                )
+                return _error("Could not transcode audio", 500)
             return _byte_range_response(data, spec["mime"], etag)
         if quality not in ("", "original"):
             return _error("Unsupported audio quality", 400)
@@ -1287,9 +1329,9 @@ def create_app(config):
             "albumSortDescending": config.album_sort_descending,
             "coverSize": config.cover_size,
             "jpegQuality": config.jpeg_quality,
-            "scan": scans.snapshot(),
-            "rekey": rekeys.snapshot(),
-            "artworkJob": artworks.snapshot(),
+            "scan": _public_job(scans.snapshot(), authenticated),
+            "rekey": _public_job(rekeys.snapshot(), authenticated),
+            "artworkJob": _public_job(artworks.snapshot(), authenticated),
         })
 
     @app.get("/api/setup/stats")
@@ -1593,7 +1635,10 @@ def create_app(config):
 
     @app.get("/api/setup/rekey")
     def api_setup_rekey_status():
-        return _json_response(rekeys.snapshot())
+        authenticated = admin_auth.is_authenticated(_admin_token())
+        return _json_response(
+            _public_job(rekeys.snapshot(), authenticated)
+        )
 
     @app.post("/api/setup/artwork")
     def api_setup_artwork():
@@ -1617,12 +1662,16 @@ def create_app(config):
 
     @app.get("/api/setup/artwork")
     def api_setup_artwork_status():
-        return _json_response(artworks.snapshot())
+        authenticated = admin_auth.is_authenticated(_admin_token())
+        return _json_response(
+            _public_job(artworks.snapshot(), authenticated)
+        )
 
     @app.get("/api/scan")
     @app.get("/api/scan/status")
     def api_scan_status():
-        return _json_response(scans.snapshot())
+        authenticated = admin_auth.is_authenticated(_admin_token())
+        return _json_response(_public_job(scans.snapshot(), authenticated))
 
     @app.post("/api/scan")
     def api_scan_start():
@@ -1679,13 +1728,15 @@ def create_app(config):
         else:
             state = "ready"
             job = None
+        authenticated = admin_auth.is_authenticated(_admin_token())
+        public_job = _public_job(job, authenticated)
         return _json_response({
             "online": online,
             "state": state,
-            "phase": (job or {}).get("phase") or "",
-            "completed": int((job or {}).get("completed") or 0),
-            "total": (job or {}).get("total"),
-            "message": (job or {}).get("message") or "",
+            "phase": public_job.get("phase") or "",
+            "completed": int(public_job.get("completed") or 0),
+            "total": public_job.get("total"),
+            "message": public_job.get("message") or "",
         })
 
     @app.get("/api/health")
