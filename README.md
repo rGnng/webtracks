@@ -172,9 +172,10 @@ so existing configs keep working; they are no longer required. Legacy
 `identifier` and `namespace` keys are ignored. Library metadata is never written
 back to `config.yaml`.
 
-The library ID can be changed from **Setup** using the pencil button next to a
-library. This updates the database only and keeps the current namespace; run
-**ReKey Database** afterwards to calculate the new namespace and song UUIDs.
+The library ID can be changed from **Setup** using the **Change ID** button
+next to a library. This updates the database only and keeps the current
+namespace; run **ReKey Database** afterwards to calculate the new namespace and
+song UUIDs.
 ReKey writes the new namespace back to the database, never to `config.yaml`.
 
 The transcode cache is an in-process cache keyed by song ID, quality, source
@@ -294,8 +295,8 @@ does, only the index is updated; audio files are never modified.
 
 ### In-page Setup
 
-Click the gear at the bottom left of the status bar to open **Setup**. Scanning
-and ReKey require signing in first:
+Click the gear at the bottom left of the status bar to open **Setup**. Adding
+libraries, changing their location, scanning, and ReKey require signing in first:
 
 - Password field: `Enter admin password`
 - Only the SHA-1 of the password is stored, in `admin_password_sha1`
@@ -315,11 +316,19 @@ and ReKey require signing in first:
 
 Once signed in you can:
 
+- **Add Library**: enter a folder path on the server (absolute, or starting
+  with `~`) and optionally a library identifier. The folder is indexed
+  read-only, must not overlap an existing library, and a Quick Scan starts
+  immediately;
+- **Change Location**: re-root an existing library. Songs are matched by their
+  relative paths, stars, play counts, playlists, and IDs are preserved, and a
+  timestamped SQLite backup is written first. Missing files stay indexed until
+  a prune scan removes them;
 - **Quick Scan**: scan the configured directories for new files;
 - **Full Scan**: re-read every file and rebuild metadata and the artwork cache;
 - **Rebuild Artwork**: re-extract every album cover using the current
   `cover_size` and `jpeg_quality` without rescanning the database;
-- **Change Library ID**: edit a library's `identifier` from the pencil button.
+- **Change ID**: edit a library's `identifier` from the **Change ID** button.
   The current namespace stays in the database until ReKey runs;
 - **ReKey Database**: recompute all song, album, and artist IDs while preserving
   stars, play counts, playlists, and dates. The current namespace is recalculated
@@ -329,7 +338,7 @@ Once signed in you can:
   as UUIDs or URL-safe Base64;
 - **Settings → Default album sort / Sort order**: choose Recently Added, Album
   Name, Artist, or Year, and Ascending or Descending for new player sessions;
-- **Settings → Cover size / JPEG quality**: set the album art cache dimensions
+- **Settings → Artwork Cache Size / JPEG quality**: set the album art cache dimensions
   and JPEG quality. Use **Rebuild Artwork** or the next Full Scan to rebuild
   existing covers; and
 - **Admin → Change Password**: button next to Log Out; replace the admin
@@ -337,10 +346,11 @@ Once signed in you can:
   revoked, and you must log in again with the new password.
 
 The Setup library list shows each library's ID with its current namespace in
-grey. The music folder path is only shown after signing in. The backend only
-scans libraries already stored in the database; the web UI cannot enter scan
-paths or add libraries. Scans run in a background thread, the Setup window shows
-progress, and the library refreshes automatically when a scan finishes.
+grey. The music folder path is only shown after signing in. Adding libraries
+and changing their location are admin-only actions; both run against folders on
+the server machine. The backend only scans libraries already stored in the
+database. Scans run in a background thread, the Setup window shows progress, and
+the library refreshes automatically when a scan finishes.
 
 You can still generate a password hash manually:
 

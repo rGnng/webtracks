@@ -54,7 +54,7 @@ from tracks_db import (
     LibraryDB,
     ReadOnlyError,
 )
-from tracks_identity import canonical_path, normalize_identifier
+from tracks_identity import canonical_path, is_under, normalize_identifier
 from tracks_logging import configure_logging
 from tracks_rate_limit import DownloadRateLimiter
 from tracks_scanner import (
@@ -1534,6 +1534,152 @@ def create_app(config):
                 },
             })
         return _json_response(snapshot)
+
+    @app.post("/api/setup/libraries")
+    def api_setup_add_library():
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
+        if config.read_only:
+            return _error("The server is running in read-only mode", 403)
+        if scans.snapshot().get("running"):
+            return _error("A scan is already running", 409)
+        if rekeys.snapshot().get("running"):
+            return _error("A ReKey is already running", 409)
+        if artworks.snapshot().get("running"):
+            return _error("An artwork rebuild is already running", 409)
+        body = request.get_json(silent=True) or {}
+        raw_path = str(body.get("path") or "").strip()
+        if not raw_path:
+            return _error("Library path must not be empty", 400)
+        root = canonical_path(raw_path)
+        if not os.path.isdir(root):
+            return _error("Music folder does not exist: %s" % root, 400)
+        if not os.access(root, os.R_OK):
+            return _error("Music folder is not readable: %s" % root, 400)
+        identifier = str(body.get("identifier") or "").strip()
+
+        db = LibraryDB(config.database, read_only=False)
+        try:
+            libraries = db.load_libraries()
+            for library in libraries:
+                existing_root = canonical_path(library["path"])
+                if existing_root == root:
+                    return _error(
+                        "This folder is already a library: %s" % root, 409
+                    )
+                if is_under(root, existing_root) or is_under(
+                        existing_root, root):
+                    return _error(
+                        "The folder overlaps the library “%s”"
+                        % (library.get("name") or existing_root),
+                        409,
+                    )
+            added = db.ensure_library(root, identifier or None)
+        except (ValueError, OSError) as exc:
+            status = 409 if "already in use" in str(exc) else 400
+            return _error(str(exc), status)
+        catalog.reload()
+        _log_operation(
+            "library_added",
+            "success",
+            actor="admin",
+            path=root,
+            identifier=added.get("identifier"),
+        )
+        return _json_response({
+            "library": {
+                "id": added.get("id"),
+                "path": added.get("path"),
+                "name": added.get("name"),
+                "identifier": added.get("identifier"),
+                "namespace": added.get("id_namespace"),
+                "enabled": bool(added.get("enabled", True)),
+            }
+        }, status=201)
+
+    @app.post("/api/setup/library/relocate")
+    def api_setup_relocate_library():
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
+        if config.read_only:
+            return _error("The server is running in read-only mode", 403)
+        if scans.snapshot().get("running"):
+            return _error("A scan is already running", 409)
+        if rekeys.snapshot().get("running"):
+            return _error("A ReKey is already running", 409)
+        if artworks.snapshot().get("running"):
+            return _error("An artwork rebuild is already running", 409)
+        body = request.get_json(silent=True) or {}
+        raw_path = str(body.get("path") or "").strip()
+        raw_new_path = str(body.get("newPath") or "").strip()
+        if not raw_path or not raw_new_path:
+            return _error("Both the current and new paths are required", 400)
+        root = canonical_path(raw_path)
+        new_root = canonical_path(raw_new_path)
+        if root == new_root:
+            return _error("The library is already at this location", 400)
+        if not os.path.isdir(new_root):
+            return _error("Music folder does not exist: %s" % new_root, 400)
+        if not os.access(new_root, os.R_OK):
+            return _error("Music folder is not readable: %s" % new_root, 400)
+
+        db = LibraryDB(config.database, read_only=False)
+        libraries = db.load_libraries()
+        target = next(
+            (
+                library for library in libraries
+                if canonical_path(library["path"]) == root
+            ),
+            None,
+        )
+        if target is None:
+            return _error("Library not found in the database", 404)
+        for library in libraries:
+            if library.get("id") == target.get("id"):
+                continue
+            existing_root = canonical_path(library["path"])
+            if is_under(new_root, existing_root) or is_under(
+                    existing_root, new_root):
+                return _error(
+                    "The new location overlaps the library “%s”"
+                    % (library.get("name") or existing_root),
+                    409,
+                )
+        try:
+            backup = db.backup("relocate-backup")
+            result = db.relocate_library(root, new_root)
+        except (ReadOnlyError, ValueError) as exc:
+            return _error(str(exc), 400)
+        except OSError as exc:
+            return _error("Could not relocate the library: %s" % exc, 500)
+        catalog.reload()
+        _log_operation(
+            "library_location_changed",
+            "success",
+            actor="admin",
+            oldPath=root,
+            newPath=new_root,
+            moved=result["moved"],
+            missing=result["missing"],
+            backup=os.path.basename(backup),
+        )
+        updated = result["library"]
+        return _json_response({
+            "library": {
+                "id": updated.get("id"),
+                "path": updated.get("path"),
+                "name": updated.get("name"),
+                "identifier": updated.get("identifier"),
+                "namespace": updated.get("id_namespace"),
+                "enabled": bool(updated.get("enabled", True)),
+            },
+            "moved": result["moved"],
+            "total": result["total"],
+            "missing": result["missing"],
+            "backup": os.path.basename(backup),
+        })
 
     @app.patch("/api/setup/library")
     def api_setup_library():

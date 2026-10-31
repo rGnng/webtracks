@@ -232,6 +232,22 @@ class LibraryDB:
             number += 1
         return "library%d" % number
 
+    def backup(self, label="backup"):
+        """Write a timestamped SQLite backup next to the live database."""
+
+        if not os.path.exists(self.path):
+            raise FileNotFoundError(self.path)
+        stamp = int(time.time() * 1000)
+        backup_path = "%s.%s-%d.sqlite" % (self.path, label, stamp)
+        source = connect(self.path, read_only=True)
+        target = sqlite3.connect(backup_path)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        return backup_path
+
     def ensure_library(self, root, identifier=None):
         if self.read_only:
             raise ReadOnlyError("The database is open in read-only mode")
@@ -342,6 +358,81 @@ class LibraryDB:
         except sqlite3.IntegrityError as exc:
             raise ValueError(
                 "Library identifier or namespace is already in use"
+            ) from exc
+        finally:
+            conn.close()
+
+    def relocate_library(self, root, new_root):
+        """Move a library to a new root while preserving indexed metadata.
+
+        Every song beneath ``root`` is matched by its relative path under
+        ``new_root``.  Missing files are kept (their paths are still remapped)
+        so stars, play counts, and playlist entries survive until a prune scan.
+        """
+
+        if self.read_only:
+            raise ReadOnlyError("The database is open in read-only mode")
+        root = canonical_path(root)
+        new_root = canonical_path(new_root)
+        if not os.path.isdir(new_root):
+            raise ValueError("Music folder does not exist: %s" % new_root)
+        if not os.access(new_root, os.R_OK):
+            raise ValueError("Music folder is not readable: %s" % new_root)
+
+        self.ensure_schema()
+        conn = connect(self.path, read_only=False)
+        try:
+            existing = conn.execute(
+                "SELECT id, path, name, identifier, id_namespace, enabled, "
+                "date_added FROM libraries WHERE path = ?",
+                (root,),
+            ).fetchone()
+            if existing is None:
+                raise ValueError("Library not found: %s" % root)
+
+            songs = conn.execute(
+                "SELECT id, path FROM songs WHERE library_id = ?",
+                (existing["id"],),
+            ).fetchall()
+            updates = []
+            for song in songs:
+                relative = relative_path(song["path"], root)
+                if relative is None:
+                    continue
+                candidate = (
+                    canonical_path(os.path.join(new_root, relative))
+                    if relative else new_root
+                )
+                updates.append((song["id"], candidate))
+
+            name = os.path.basename(new_root) or "Music Library"
+            with conn:
+                conn.execute(
+                    "UPDATE libraries SET path = ?, name = ? WHERE id = ?",
+                    (new_root, name, existing["id"]),
+                )
+                for song_id, path in updates:
+                    conn.execute(
+                        "UPDATE songs SET path = ? WHERE id = ? AND library_id = ?",
+                        (path, song_id, existing["id"]),
+                    )
+            row = conn.execute(
+                "SELECT id, path, name, identifier, id_namespace, enabled, "
+                "date_added FROM libraries WHERE id = ?",
+                (existing["id"],),
+            ).fetchone()
+            missing = sum(
+                1 for _, path in updates if not os.path.isfile(path)
+            )
+            return {
+                "library": self._library_row(row),
+                "moved": len(updates),
+                "total": len(songs),
+                "missing": missing,
+            }
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "The new location conflicts with an existing song path"
             ) from exc
         finally:
             conn.close()

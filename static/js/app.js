@@ -97,6 +97,7 @@
     browserListVirtual: null,
     playlistDialog: null,
     libraryIdTarget: null,
+    libraryLocationTarget: null,
     addToPlaylistIds: [],
     lastPersistAt: 0,
     doneInitialLoad: false,
@@ -4321,6 +4322,7 @@
     state.confirmCallback = null;
     state.playlistDialog = null;
     state.libraryIdTarget = null;
+    state.libraryLocationTarget = null;
     state.addToPlaylistIds = [];
     state.addToPlaylistSongs = [];
     el.modalRoot.classList.add("hidden");
@@ -4428,8 +4430,8 @@
   function setupLibrariesHtml(canEdit, showPath) {
     const libraries = (state.setupInfo && state.setupInfo.libraries) || [];
     if (!libraries.length) {
-      return `<div class="field-help">No libraries are in the database. Add one with
-        <code>python3 server.py scan --root PATH</code>.</div>`;
+      return `<div class="field-help">No libraries are in the database. Use
+        Add Library below, or run <code>python3 server.py scan --root PATH</code>.</div>`;
     }
     return `<div class="setup-libraries">${libraries.map((library) => `
       <div class="setup-library">
@@ -4442,13 +4444,22 @@
               library.namespace || "—"
             )}</span>
           </div>
-          <button class="setup-library-edit" type="button"
-                  data-action="edit-library-id"
-                  data-path="${esc(library.path || "")}"
-                  title="${canEdit ? "Change Library ID" : "Log in to change the Library ID"}"
-                  aria-label="Change Library ID" ${canEdit ? "" : "disabled"}>
-            ${icon("pencil")}
-          </button>
+          <div class="setup-library-actions">
+            <button class="setup-library-action" type="button"
+                    data-action="change-library-location"
+                    data-path="${esc(library.path || "")}"
+                    title="${canEdit ? "Change the library folder" : "Log in to change the location"}"
+                    ${canEdit ? "" : "disabled"}>
+              Change Location…
+            </button>
+            <button class="setup-library-action" type="button"
+                    data-action="edit-library-id"
+                    data-path="${esc(library.path || "")}"
+                    title="${canEdit ? "Change Library ID" : "Log in to change the Library ID"}"
+                    ${canEdit ? "" : "disabled"}>
+              Change ID
+            </button>
+          </div>
         </div>
         ${showPath && library.path
           ? `<div class="setup-library-path">${esc(library.path)}</div>`
@@ -4678,11 +4689,11 @@
           </select>
         </div>
         <div class="setup-setting-row">
-          <label class="field-label" for="setup-cover-size">Cover size</label>
+          <label class="field-label" for="setup-cover-size">Artwork Cache Size</label>
           <input id="setup-cover-size" class="text-input setup-number-input"
                  type="number" min="16" max="2000" step="1"
                  value="${coverSize}" title="Applied by the next full scan"
-                 aria-label="Album art cover size in pixels" ${settingsDisabled}>
+                 aria-label="Artwork cache size in pixels" ${settingsDisabled}>
           <span class="setup-setting-unit">px</span>
         </div>
         <div class="setup-setting-row">
@@ -4748,6 +4759,11 @@
             <div class="field-label">Libraries</div>
             ${setupLibrariesHtml(enabled, state.adminAuthenticated)}
             <div class="setup-actions">
+              <button class="secondary-button" type="button"
+                      data-action="setup-add-library" ${disabled}
+                      title="${state.adminAuthenticated ? "Add a music folder on the server" : "Log in to add a library"}">
+                Add Library…
+              </button>
               <button class="secondary-button" type="button"
                       data-action="setup-quick-scan" ${disabled}>
                 Quick Scan
@@ -5133,6 +5149,231 @@
     if (state.setupInfo) state.setupInfo.authenticated = false;
     renderSetup();
     if (state.section === "playlists" && !state.albumDetail) renderContent();
+  }
+
+  function openAddLibraryDialog() {
+    if (!state.adminAuthenticated) {
+      toast("Log in from Setup to add a library.", { error: true });
+      return;
+    }
+    state.modalMode = "add-library";
+    el.modalRoot.innerHTML = `
+      <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Add Library">
+        <div class="sheet-header">
+          <img class="app-mark-small" src="/static/app-icon.svg" alt="">
+          <div>
+            <div class="sheet-title">Add Library</div>
+            <div class="sheet-subtitle">Choose a music folder on the server.</div>
+          </div>
+          <button class="sheet-close" type="button" data-action="add-library-cancel"
+                  title="Close">×</button>
+        </div>
+        <div class="sheet-body">
+          <label class="field">
+            <span class="field-label" for="add-library-path">Folder path</span>
+            <input id="add-library-path" class="text-input" type="text"
+                   autocomplete="off" spellcheck="false"
+                   placeholder="/Users/me/Music"
+                   aria-label="Library folder path">
+          </label>
+          <div class="field-help">Enter an absolute path (or a path starting
+            with <code>~</code>) to a folder on the server. The folder is
+            indexed read-only and must not overlap an existing library.</div>
+          <label class="field">
+            <span class="field-label" for="add-library-identifier">Library ID (optional)</span>
+            <input id="add-library-identifier" class="text-input" type="text"
+                   autocomplete="off" spellcheck="false"
+                   placeholder="Automatic"
+                   aria-label="Library identifier">
+          </label>
+          <div class="field-help">Leave blank to generate the next
+            <code>libraryN</code> identifier.</div>
+          <div id="add-library-error" class="field-help setup-error"></div>
+          <div class="sheet-actions">
+            <button class="secondary-button" type="button"
+                    data-action="add-library-cancel">Cancel</button>
+            <button class="primary-button" type="button"
+                    data-action="add-library-save">Add Library</button>
+          </div>
+        </div>
+      </div>`;
+    el.modalRoot.classList.remove("hidden");
+    const input = $("#add-library-path", el.modalRoot);
+    if (input) {
+      input.focus();
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          saveAddLibraryDialog();
+        }
+      });
+    }
+  }
+
+  async function saveAddLibraryDialog() {
+    const pathInput = $("#add-library-path", el.modalRoot);
+    const identifierInput = $("#add-library-identifier", el.modalRoot);
+    const errorNode = $("#add-library-error", el.modalRoot);
+    const path = pathInput ? pathInput.value.trim() : "";
+    if (!path) {
+      if (errorNode) errorNode.textContent = "Folder path must not be empty.";
+      if (pathInput) pathInput.focus();
+      return;
+    }
+    const button = $('[data-action="add-library-save"]', el.modalRoot);
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Adding…";
+    }
+    try {
+      const data = await api("/api/setup/libraries", {
+        method: "POST",
+        headers: adminHeaders(),
+        body: JSON.stringify({
+          path,
+          identifier: identifierInput ? identifierInput.value.trim() : "",
+        }),
+      });
+      closeModal();
+      await openSetupModal();
+      toast(`Library “${data.library.name}” added`);
+      startSetupScan("quick");
+    } catch (error) {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Add Library";
+      }
+      if (error.status === 401) {
+        setAdminToken("");
+        state.adminAuthenticated = false;
+        closeModal();
+        await openSetupModal();
+        state.setupError = "Session expired. Enter the admin password again.";
+        renderSetup();
+        return;
+      }
+      if (errorNode) errorNode.textContent = error.message;
+    }
+  }
+
+  function openChangeLocationDialog(libraryPath) {
+    if (!state.adminAuthenticated) {
+      toast("Log in from Setup to change a library location.", { error: true });
+      return;
+    }
+    const libraries = (state.setupInfo && state.setupInfo.libraries) || [];
+    const library = libraries.find((item) => item.path === libraryPath);
+    if (!library) return;
+    state.modalMode = "library-location";
+    state.libraryLocationTarget = {
+      path: library.path,
+      identifier: library.identifier || "",
+      name: library.name || library.path,
+    };
+    el.modalRoot.innerHTML = `
+      <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Change Library Location">
+        <div class="sheet-header">
+          <img class="app-mark-small" src="/static/app-icon.svg" alt="">
+          <div>
+            <div class="sheet-title">Change Library Location</div>
+            <div class="sheet-subtitle">${esc(
+              library.identifier || library.name || library.path
+            )}</div>
+          </div>
+          <button class="sheet-close" type="button"
+                  data-action="library-location-cancel" title="Close">×</button>
+        </div>
+        <div class="sheet-body">
+          <div class="field-help">Current location:
+            <code>${esc(library.path)}</code></div>
+          <label class="field">
+            <span class="field-label" for="library-location-input">New folder path</span>
+            <input id="library-location-input" class="text-input" type="text"
+                   autocomplete="off" spellcheck="false"
+                   value="${esc(library.path)}"
+                   aria-label="New library folder path">
+          </label>
+          <div class="field-help">Tracks are matched by their relative paths.
+            A database backup is written first. Files that are not present in
+            the new location stay indexed until a prune scan removes them.</div>
+          <div id="library-location-error" class="field-help setup-error"></div>
+          <div class="sheet-actions">
+            <button class="secondary-button" type="button"
+                    data-action="library-location-cancel">Cancel</button>
+            <button class="primary-button" type="button"
+                    data-action="library-location-save">Change Location</button>
+          </div>
+        </div>
+      </div>`;
+    el.modalRoot.classList.remove("hidden");
+    const input = $("#library-location-input", el.modalRoot);
+    if (input) {
+      input.focus();
+      input.select();
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          saveLibraryLocationDialog();
+        }
+      });
+    }
+  }
+
+  async function saveLibraryLocationDialog() {
+    const target = state.libraryLocationTarget;
+    const input = $("#library-location-input", el.modalRoot);
+    const errorNode = $("#library-location-error", el.modalRoot);
+    if (!target || !input) return;
+    const newPath = input.value.trim();
+    if (!newPath) {
+      if (errorNode) errorNode.textContent = "New folder path must not be empty.";
+      input.focus();
+      return;
+    }
+    if (newPath === target.path) {
+      if (errorNode) errorNode.textContent = "The library is already at this location.";
+      input.focus();
+      return;
+    }
+    const button = $('[data-action="library-location-save"]', el.modalRoot);
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Changing…";
+    }
+    try {
+      const data = await api("/api/setup/library/relocate", {
+        method: "POST",
+        headers: adminHeaders(),
+        body: JSON.stringify({
+          path: target.path,
+          newPath,
+        }),
+      });
+      closeModal();
+      await openSetupModal();
+      const missing = Number(data.missing || 0);
+      toast(
+        `Library location changed; ${Number(data.moved || 0).toLocaleString()}`
+        + ` track${Number(data.moved || 0) === 1 ? "" : "s"} remapped`
+        + (missing ? `, ${missing.toLocaleString()} not found` : "")
+      );
+      startSetupScan("quick");
+    } catch (error) {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Change Location";
+      }
+      if (error.status === 401) {
+        setAdminToken("");
+        state.adminAuthenticated = false;
+        closeModal();
+        await openSetupModal();
+        state.setupError = "Session expired. Enter the admin password again.";
+        renderSetup();
+        return;
+      }
+      if (errorNode) errorNode.textContent = error.message;
+    }
   }
 
   async function startSetupScan(mode) {
@@ -6408,6 +6649,20 @@
         loginAdmin();
       } else if (action === "setup-logout") {
         logoutAdmin();
+      } else if (action === "setup-add-library") {
+        openAddLibraryDialog();
+      } else if (action === "add-library-save") {
+        saveAddLibraryDialog();
+      } else if (action === "add-library-cancel") {
+        closeModal();
+        openSetupModal();
+      } else if (action === "change-library-location") {
+        openChangeLocationDialog(actionEl.dataset.path || "");
+      } else if (action === "library-location-save") {
+        saveLibraryLocationDialog();
+      } else if (action === "library-location-cancel") {
+        closeModal();
+        openSetupModal();
       } else if (action === "setup-quick-scan") {
         startSetupScan("quick");
       } else if (action === "setup-full-scan") {

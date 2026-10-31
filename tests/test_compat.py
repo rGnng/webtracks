@@ -1099,6 +1099,94 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(library["identifier"], "renamed")
         self.assertEqual(library["id_namespace"], "api")
 
+    def test_setup_add_library_requires_admin_and_validates_overlap(self):
+        second = os.path.join(self.root, "Second Library")
+        os.makedirs(second)
+        payload = {"path": second}
+        self.assertEqual(
+            self.client.post("/api/setup/libraries", json=payload).status_code,
+            401,
+        )
+        token = self.client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+        added = self.client.post(
+            "/api/setup/libraries", json=payload, headers=headers
+        )
+        self.assertEqual(added.status_code, 201)
+        library = added.get_json()["library"]
+        self.assertEqual(
+            library["path"], os.path.realpath(second)
+        )
+        self.assertTrue(library["identifier"])
+        self.assertEqual(library["identifier"], library["namespace"])
+
+        duplicate = self.client.post(
+            "/api/setup/libraries", json=payload, headers=headers
+        )
+        self.assertEqual(duplicate.status_code, 409)
+        nested = os.path.join(second, "Nested")
+        os.makedirs(nested)
+        overlap = self.client.post(
+            "/api/setup/libraries", json={"path": nested}, headers=headers
+        )
+        self.assertEqual(overlap.status_code, 409)
+        setup = self.client.get(
+            "/api/setup", headers=headers
+        ).get_json()
+        self.assertEqual(len(setup["libraries"]), 2)
+
+    def test_setup_relocate_library_preserves_song_and_database_backup(self):
+        moved_root = os.path.join(self.root, "Moved Library")
+        os.makedirs(moved_root)
+        moved_audio = os.path.join(moved_root, "tone.wav")
+        shutil.copy2(self.audio_path, moved_audio)
+        payload = {"path": self.music, "newPath": moved_root}
+        self.assertEqual(
+            self.client.post(
+                "/api/setup/library/relocate", json=payload
+            ).status_code,
+            401,
+        )
+        token = self.client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+        response = self.client.post(
+            "/api/setup/library/relocate", json=payload, headers=headers
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["moved"], 1)
+        self.assertEqual(data["missing"], 0)
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(self.root, data["backup"])
+            )
+        )
+        self.assertEqual(
+            os.path.realpath(data["library"]["path"]),
+            os.path.realpath(moved_root),
+        )
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        song = dict(conn.execute("SELECT * FROM songs").fetchone())
+        library = dict(conn.execute("SELECT * FROM libraries").fetchone())
+        conn.close()
+        self.assertEqual(song["id"], self.song_id)
+        self.assertEqual(
+            os.path.realpath(song["path"]), os.path.realpath(moved_audio)
+        )
+        self.assertEqual(
+            os.path.realpath(library["path"]), os.path.realpath(moved_root)
+        )
+        audio = self.client.get(
+            "/api/audio/%s?quality=raw" % self.song_id
+        )
+        self.assertEqual(audio.status_code, 200)
+        audio.close()
+
     def test_legacy_config_paths_seed_database_once(self):
         legacy_db = os.path.join(self.root, "legacy.sqlite")
         app = create_app(
