@@ -2600,11 +2600,12 @@ button:disabled {
 }
 
 .setup-library-actions {
+  flex: 0 1 auto;
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 4px;
-  margin-top: 6px;
 }
 
 .setup-library-action {

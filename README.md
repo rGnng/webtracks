@@ -323,7 +323,7 @@ Once signed in you can:
 - **Disable / Enable Library**: hide a library's songs from the player and
   scans without deleting its index. Disabling stops playback and clears the
   queue and history; enabling starts a Quick Scan;
-- **Delete Index**: only available for a disabled library. This removes its
+- **Delete**: only available for a disabled library. This removes its
   indexed songs, stars, play counts, and playlist entries but keeps audio files
   and user-created playlists; a timestamped SQLite backup is written first;
 - **Change Location**: re-root an existing library. Songs are matched by their

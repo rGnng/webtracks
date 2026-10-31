@@ -4462,40 +4462,40 @@
             )}</span>
             ${libraryEnabled ? "" : '<span class="setup-library-badge">Disabled</span>'}
           </div>
-          <button class="setup-library-action setup-library-toggle" type="button"
-                  data-action="toggle-library-enabled"
-                  data-id="${esc(library.id || "")}"
-                  data-enabled="${libraryEnabled ? "true" : "false"}"
-                  title="${toggleTitle}" ${canEdit ? "" : "disabled"}>
-            ${libraryEnabled ? "Disable" : "Enable"}
-          </button>
+          <div class="setup-library-actions">
+            <button class="setup-library-action" type="button"
+                    data-action="change-library-location"
+                    data-path="${esc(library.path || "")}"
+                    title="${locationTitle}"
+                    ${canEdit && libraryEnabled ? "" : "disabled"}>
+              Change Location…
+            </button>
+            <button class="setup-library-action" type="button"
+                    data-action="edit-library-id"
+                    data-path="${esc(library.path || "")}"
+                    title="${canEdit ? "Change Library ID" : "Log in to change the Library ID"}"
+                    ${canEdit ? "" : "disabled"}>
+              Change ID
+            </button>
+            <button class="setup-library-action setup-library-toggle" type="button"
+                    data-action="toggle-library-enabled"
+                    data-id="${esc(library.id || "")}"
+                    data-enabled="${libraryEnabled ? "true" : "false"}"
+                    title="${toggleTitle}" ${canEdit ? "" : "disabled"}>
+              ${libraryEnabled ? "Disable" : "Enable"}
+            </button>
+            <button class="setup-library-action danger" type="button"
+                    data-action="delete-library"
+                    data-id="${esc(library.id || "")}"
+                    title="${deleteTitle}"
+                    ${canEdit && !libraryEnabled ? "" : "disabled"}>
+              Delete
+            </button>
+          </div>
         </div>
         ${showPath && library.path
           ? `<div class="setup-library-path">${esc(library.path)}</div>`
           : ""}
-        <div class="setup-library-actions">
-          <button class="setup-library-action" type="button"
-                  data-action="change-library-location"
-                  data-path="${esc(library.path || "")}"
-                  title="${locationTitle}"
-                  ${canEdit && libraryEnabled ? "" : "disabled"}>
-            Change Location…
-          </button>
-          <button class="setup-library-action" type="button"
-                  data-action="edit-library-id"
-                  data-path="${esc(library.path || "")}"
-                  title="${canEdit ? "Change Library ID" : "Log in to change the Library ID"}"
-                  ${canEdit ? "" : "disabled"}>
-            Change ID
-          </button>
-          <button class="setup-library-action danger" type="button"
-                  data-action="delete-library"
-                  data-id="${esc(library.id || "")}"
-                  title="${deleteTitle}"
-                  ${canEdit && !libraryEnabled ? "" : "disabled"}>
-            Delete Index…
-          </button>
-        </div>
       </div>`;
     }).join("")}</div>`;
   }
