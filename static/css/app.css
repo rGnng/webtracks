@@ -455,11 +455,11 @@ button:disabled {
 
 .lcd-center {
   position: absolute;
-  left: calc(50% - 22.5px);
-  top: 0;
-  width: calc(100% - 120px);
+  left: 54px;
+  right: 54px;
+  top: 50%;
   height: 30px;
-  transform: translateX(-50%);
+  transform: translateY(-50%);
   display: flex;
   align-items: center;
   justify-content: center;
