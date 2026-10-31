@@ -1102,6 +1102,10 @@ def create_app(config):
         )
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "X-Robots-Tag",
+            "noindex, nofollow, noarchive, nosnippet, noimageindex",
+        )
         if response.status_code >= 500:
             runtime_log.error(
                 "HTTP %s %s -> %s", request.method, request.path,
@@ -1125,6 +1129,14 @@ def create_app(config):
     @app.get("/")
     def index():
         return send_from_directory(app.static_folder, "index.html", max_age=0)
+
+    @app.get("/robots.txt")
+    def robots_txt():
+        return Response(
+            "User-agent: *\nDisallow: /\n",
+            mimetype="text/plain",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
 
     @app.get("/api/bootstrap")
     def api_bootstrap():

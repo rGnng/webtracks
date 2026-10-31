@@ -544,6 +544,25 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(fallback.status_code, 200)
         self.assertEqual(fallback.mimetype, "image/svg+xml")
 
+    def test_robots_txt_and_noindex_headers(self):
+        robots = self.client.get("/robots.txt")
+        self.assertEqual(robots.status_code, 200)
+        self.assertEqual(robots.mimetype, "text/plain")
+        self.assertIn("User-agent: *", robots.get_data(as_text=True))
+        self.assertIn("Disallow: /", robots.get_data(as_text=True))
+        self.assertIn(
+            "noindex", robots.headers.get("X-Robots-Tag", "")
+        )
+
+        page = self.client.get("/")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(
+            "noindex", page.headers.get("X-Robots-Tag", "")
+        )
+        self.assertIn(
+            'name="robots"', page.get_data(as_text=True)
+        )
+
     def test_public_songs_hide_private_metadata(self):
         private_keys = ("comments", "lastPlayed", "skipCount")
         songs = self.client.get("/api/songs").get_json()["songs"]

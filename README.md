@@ -380,6 +380,30 @@ Both files rotate at local midnight. The previous day's file is gzip-compressed
 30 days. Set `WEBTRACKS_LOG_DIR` or `WEBTRACKS_LOG_LEVEL` to override the file
 settings.
 
+### Search engine visibility
+
+WebTracks is a private library, so the app sends this header on every response:
+
+```text
+X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex
+```
+
+It also serves `/robots.txt` with `Disallow: /`, and `static/index.html` contains
+a matching `<meta name="robots">` tag. The nginx example repeats the header and
+the robots file so they still work if the backend is unavailable.
+
+These are advisory. The reliable protection behind Cloudflare is **Cloudflare
+Access (Zero Trust)**: create a self-hosted Access application for the hostname
+and require your email/IdP login. Search engine bots cannot authenticate, so they
+never reach the library. Optionally add a WAF rule blocking verified bots with
+the expression `(cf.client.bot)`, or enable **Security → Bots → Block AI bots /
+AI Crawl Control**.
+
+If URLs were already indexed, `robots.txt` will not remove them by itself. Use
+Google Search Console or Bing Webmaster Tools removals, and confirm that
+Cloudflare is not serving a separate managed `robots.txt` that overrides the
+origin.
+
 ## Compatibility with Tracks
 
 This project uses the same schema, stable ID algorithm, and artwork cache naming
