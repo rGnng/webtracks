@@ -1863,11 +1863,6 @@ button:disabled {
   padding-bottom: 14px;
 }
 
-.browser-album.selected .browser-album-head {
-  background: var(--row-selected);
-  border-radius: 6px;
-}
-
 .browser-album-head {
   display: flex;
   align-items: center;
