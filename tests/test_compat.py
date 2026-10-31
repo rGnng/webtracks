@@ -13,12 +13,13 @@ from unittest import mock
 
 import yaml
 
+from flask import Flask
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from server import Config, create_app, main  # noqa: E402
+from server import Config, create_app, main, _client_ip  # noqa: E402
 from tracks_config import (  # noqa: E402
     DEFAULT_ADMIN_PASSWORD_SHA1,
     DEFAULT_SETTINGS,
@@ -799,11 +800,16 @@ class ApiTests(unittest.TestCase):
                     )
                 )
                 client = app.test_client()
+                proxy_headers = {
+                    "X-Forwarded-For": "203.0.113.7, 10.0.0.2",
+                }
                 client.post(
-                    "/api/setup/login", json={"password": "wrong"}
+                    "/api/setup/login", json={"password": "wrong"},
+                    headers=proxy_headers,
                 )
                 token = client.post(
-                    "/api/setup/login", json={"password": "1"}
+                    "/api/setup/login", json={"password": "1"},
+                    headers=proxy_headers,
                 ).get_json()["token"]
                 client.patch(
                     "/api/setup/settings",
@@ -838,6 +844,17 @@ class ApiTests(unittest.TestCase):
             self.assertIn("remoteIp", record)
             self.assertIn("method", record)
             self.assertIn("path", record)
+        login_records = [
+            record for record in records
+            if record["action"] == "admin_login"
+        ]
+        self.assertTrue(login_records)
+        for record in login_records:
+            self.assertEqual(record["remoteIp"], "203.0.113.7")
+            self.assertEqual(record["proxyIp"], "127.0.0.1")
+            self.assertEqual(
+                record["forwardedFor"], "203.0.113.7, 10.0.0.2"
+            )
 
     def test_setup_admin_auth_and_scan_guards(self):
         setup = self.client.get("/api/setup")
@@ -960,6 +977,50 @@ class LoggingTests(unittest.TestCase):
                 )
             finally:
                 self._close_loggers((runtime, operations))
+
+
+class ClientIpTests(unittest.TestCase):
+    def setUp(self):
+        self.app = Flask(__name__)
+
+    def client_ip(self, headers=None, remote_addr="192.0.2.10"):
+        environ = {"REMOTE_ADDR": remote_addr}
+        with self.app.test_request_context(headers=headers or {},
+                                           environ_base=environ):
+            return _client_ip()
+
+    def test_forwarded_for_takes_priority(self):
+        self.assertEqual(
+            self.client_ip({
+                "X-Forwarded-For": "203.0.113.7, 10.0.0.2, 10.0.0.3",
+                "X-Real-IP": "198.51.100.9",
+            }),
+            "203.0.113.7",
+        )
+
+    def test_forwarded_for_skips_invalid_and_normalizes(self):
+        self.assertEqual(
+            self.client_ip({
+                "X-Forwarded-For": "unknown, 203.0.113.7:54321, 10.0.0.2",
+            }),
+            "203.0.113.7",
+        )
+        self.assertEqual(
+            self.client_ip({
+                "X-Forwarded-For": "[2001:db8::1]:443, 10.0.0.2",
+            }),
+            "2001:db8::1",
+        )
+
+    def test_real_ip_and_socket_fallbacks(self):
+        self.assertEqual(
+            self.client_ip({"X-Real-IP": "198.51.100.9"}),
+            "198.51.100.9",
+        )
+        self.assertEqual(
+            self.client_ip(remote_addr="192.0.2.55"),
+            "192.0.2.55",
+        )
 
 
 class ConfigTests(unittest.TestCase):

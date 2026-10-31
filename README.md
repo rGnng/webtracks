@@ -291,15 +291,25 @@ Two log files are written under `logs_dir`:
 
 - `runtime.log` records startup, scan, ReKey, and server errors. Its threshold is
   `log_level` (default `INFO`).
-- `operations.log` records admin and library operations. Each entry includes a
-  local timestamp, action, result, source IP, `X-Forwarded-For`, user agent,
-  HTTP method, path, and action-specific details. It covers admin login/logout,
-  password and URL-format changes, library ID changes, scans, ReKey, and
-  playlist changes.
+- `operations.log` records admin and library operations. `remoteIp` is the
+  client IP resolved from
+  `X-Forwarded-For` (the leftmost valid entry), then `X-Real-IP`, then the
+  direct socket peer. `proxyIp` records the direct peer and `forwardedFor` the
+  raw `X-Forwarded-For` header. Each entry also includes a local timestamp,
+  action, result, user agent, HTTP method, path, and action-specific details.
+  It covers admin login/logout, password and URL-format changes, library ID
+  changes, scans, ReKey, and playlist changes.
 
 Both logs use `log_format`: `text` (default) writes timestamped key=value lines,
 while `json` writes one JSON object per line. Set it in `config.yaml` or with
 `WEBTRACKS_LOG_FORMAT`.
+
+> `X-Forwarded-For` is trusted. If the service is reachable directly as well as
+> through a proxy, keep `host: 127.0.0.1` and publish only through the proxy, or
+> restrict access to the proxy, so clients cannot spoof the logged IP.
+
+An example nginx configuration, including TLS, client-IP headers, and long-lived
+audio streaming, is in `nignx_reverse_proxy.conf`.
 
 Both files rotate at local midnight. The previous day's file is gzip-compressed
 (for example `operations.log.2026-10-30.gz`), and old archives are pruned after
