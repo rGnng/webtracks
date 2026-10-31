@@ -1282,6 +1282,53 @@ class ApiTests(unittest.TestCase):
             [],
         )
 
+    def test_full_scan_reports_and_deletes_missing_indexes(self):
+        token = self.client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+        os.remove(self.audio_path)
+        started = self.client.post(
+            "/api/setup/scan", json={"mode": "full"}, headers=headers
+        )
+        self.assertEqual(started.status_code, 202)
+        job = started.get_json()["job"]
+        for _ in range(120):
+            if not job.get("running"):
+                break
+            time.sleep(0.05)
+            job = self.client.get(
+                "/api/scan", headers=headers
+            ).get_json()
+        self.assertFalse(job["running"])
+        self.assertEqual(job["phase"], "Done")
+        missing = job["summary"]["missingSongs"]
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]["id"], self.song_id)
+        self.assertEqual(missing[0]["title"], "Tone")
+
+        self.assertEqual(
+            self.client.post(
+                "/api/setup/missing-songs/delete",
+                json={"songIds": [self.song_id]},
+            ).status_code,
+            401,
+        )
+        deleted = self.client.post(
+            "/api/setup/missing-songs/delete",
+            json={"songIds": [self.song_id]},
+            headers=headers,
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.get_json()["removed"], 1)
+        conn = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM songs").fetchone()[0], 0
+        )
+        conn.close()
+        job = self.client.get("/api/scan", headers=headers).get_json()
+        self.assertEqual(job["summary"]["missingSongs"], [])
+
     def test_legacy_config_paths_seed_database_once(self):
         legacy_db = os.path.join(self.root, "legacy.sqlite")
         app = create_app(

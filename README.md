@@ -321,8 +321,8 @@ Once signed in you can:
   read-only, must not overlap an existing library, and a Quick Scan starts
   immediately;
 - **Disable / Enable Library**: hide a library's songs from the player and
-  scans without deleting its index. Disabling stops playback and clears the
-  queue and history; enabling starts a Quick Scan;
+  scans without deleting its index. Disabling requires confirmation, stops
+  playback, and clears the queue and history; enabling starts a Quick Scan;
 - **Delete**: only available for a disabled library. This removes its
   indexed songs, stars, play counts, and playlist entries but keeps audio files
   and user-created playlists; a timestamped SQLite backup is written first;
@@ -331,7 +331,9 @@ Once signed in you can:
   timestamped SQLite backup is written first. Missing files stay indexed until
   a prune scan removes them;
 - **Quick Scan**: scan the configured directories for new files;
-- **Full Scan**: re-read every file and rebuild metadata and the artwork cache;
+- **Full Scan**: re-read every file and rebuild metadata and the artwork cache.
+  If indexed tracks are missing from disk, a review lists them and lets you keep
+  their indexes or delete only the selected entries;
 - **Rebuild Artwork**: re-extract every album cover using the current
   `cover_size` and `jpeg_quality` without rescanning the database;
 - **Change ID**: edit a library's `identifier` from the **Change ID** button.

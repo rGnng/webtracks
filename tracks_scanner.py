@@ -802,7 +802,8 @@ def _remove_cached_artwork(album_ids, cache_dir):
 
 def scan_one(db, root, identifier=None, mode="quick", prune=False,
              artwork_dir=None, jpeg_quality=DEFAULT_JPEG_QUALITY,
-             cover_size=DEFAULT_COVER_SIZE, force=False, progress=None):
+             cover_size=DEFAULT_COVER_SIZE, force=False, report_missing=False,
+             progress=None):
     """Create/update one library and its artwork cache.
 
     Returns a summary dictionary.  ``progress`` is called as
@@ -870,6 +871,25 @@ def scan_one(db, root, identifier=None, mode="quick", prune=False,
                 "%d tracks removed" % removed,
             )
 
+    missing_songs = []
+    if report_missing and not prune:
+        if not complete:
+            errors.append(
+                "Skipped missing-file review because the folder could not "
+                "be enumerated completely."
+            )
+        else:
+            report("Inspecting Missing Tracks", 0, None, "")
+            missing_songs = db.missing_songs(library["id"], discovered)
+            for song in missing_songs:
+                song["library"] = library.get("identifier") or ""
+                song["libraryName"] = library.get("name") or ""
+            report(
+                "Inspecting Missing Tracks",
+                len(missing_songs),
+                len(missing_songs),
+                "%d missing tracks" % len(missing_songs),
+            )
     report("Done", len(tracks), len(tracks), "Scan complete")
     return {
         "root": canonical_path(root),
@@ -879,5 +899,6 @@ def scan_one(db, root, identifier=None, mode="quick", prune=False,
         "tracks": len(tracks),
         "artwork": cache_written,
         "missing": missing,
+        "missingSongs": missing_songs,
         "errors": errors,
     }

@@ -625,6 +625,56 @@ class LibraryDB:
             for row in rows
         }
 
+    def missing_songs(self, library_id, discovered_paths):
+        """Return indexed songs for a library that were not discovered.
+
+        ``discovered_paths`` must contain canonical paths from a complete
+        enumeration of the library root.
+        """
+
+        discovered = {
+            canonical_path(path) for path in (discovered_paths or [])
+        }
+        if not os.path.exists(self.path):
+            return []
+        conn = connect(self.path, read_only=True)
+        try:
+            if not _has_schema(conn):
+                return []
+            rows = conn.execute(
+                "SELECT s.id, s.path, s.title, s.duration, s.track,"
+                "       s.disc, s.play_count, s.loved,"
+                "       ar.name AS artist, al.title AS album"
+                " FROM songs s"
+                " JOIN albums al ON al.id = s.album_id"
+                " JOIN artists ar ON ar.id = s.artist_id"
+                " WHERE s.library_id = ?"
+                " ORDER BY al.title COLLATE NOCASE,"
+                "          CASE WHEN s.disc = 0 THEN 1 ELSE s.disc END,"
+                "          s.track, s.title",
+                (library_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        result = []
+        for row in rows:
+            path = canonical_path(row["path"])
+            if path in discovered:
+                continue
+            result.append({
+                "id": row["id"],
+                "path": row["path"],
+                "title": row["title"] or "",
+                "artist": row["artist"] or "",
+                "album": row["album"] or "",
+                "duration": float(row["duration"] or 0),
+                "track": int(row["track"] or 0),
+                "disc": int(row["disc"] or 0),
+                "plays": int(row["play_count"] or 0),
+                "loved": bool(row["loved"]),
+            })
+        return result
+
     def sync_tracks(self, tracks, libraries, discovered_at=None):
         """Upsert scanned tracks using Tracks' stable IDs and conflict rules."""
 
@@ -792,6 +842,18 @@ class LibraryDB:
                 ids = [row[0] for row in song_rows]
                 if ids:
                     id_marks = ",".join("?" for _ in ids)
+                    playlist_ids = [
+                        row["playlist_id"] for row in conn.execute(
+                            "SELECT DISTINCT playlist_id FROM playlist_items"
+                            " WHERE song_id IN (%s)" % id_marks,
+                            ids,
+                        )
+                    ]
+                    for playlist_id in playlist_ids:
+                        conn.execute(
+                            "UPDATE playlists SET date_modified = ? WHERE id = ?",
+                            (_now(), playlist_id),
+                        )
                     conn.execute(
                         "DELETE FROM playlist_items WHERE song_id IN (%s)" % id_marks,
                         ids,

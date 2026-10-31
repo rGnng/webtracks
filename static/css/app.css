@@ -2612,7 +2612,7 @@ button:disabled {
   height: 22px;
   padding: 0 7px;
   border-radius: 4px;
-  color: var(--text-2);
+  color: var(--text);
   font-size: 10.5px;
   font-weight: 500;
   white-space: nowrap;
@@ -2637,7 +2637,6 @@ button:disabled {
 
 .setup-library-toggle {
   min-width: 54px;
-  color: var(--text);
 }
 
 .setup-library-toggle[data-enabled="false"] {
@@ -2656,6 +2655,86 @@ button:disabled {
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+.missing-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.missing-count {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.missing-list {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: #161619;
+}
+
+.missing-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--hairline);
+  cursor: pointer;
+}
+
+.missing-row:first-child {
+  border-top: 0;
+}
+
+.missing-row:hover {
+  background: var(--control-bg-active);
+}
+
+.missing-row input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--selection-stroke);
+}
+
+.missing-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.missing-row-title {
+  display: block;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.missing-row-meta {
+  display: block;
+  margin-top: 1px;
+  color: var(--text-2);
+  font-size: 10.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.missing-row-path {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .setup-library-path {

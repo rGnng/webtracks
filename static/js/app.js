@@ -99,6 +99,8 @@
     libraryIdTarget: null,
     libraryLocationTarget: null,
     libraryDeleteTarget: null,
+    libraryDisableTarget: null,
+    missingSelection: new Set(),
     addToPlaylistIds: [],
     lastPersistAt: 0,
     doneInitialLoad: false,
@@ -4325,6 +4327,8 @@
     state.libraryIdTarget = null;
     state.libraryLocationTarget = null;
     state.libraryDeleteTarget = null;
+    state.libraryDisableTarget = null;
+    state.missingSelection = new Set();
     state.addToPlaylistIds = [];
     state.addToPlaylistSongs = [];
     el.modalRoot.classList.add("hidden");
@@ -5468,6 +5472,59 @@
     }
   }
 
+  function openDisableLibraryDialog(libraryId) {
+    if (!state.adminAuthenticated) {
+      toast("Log in from Setup to change a library's state.", { error: true });
+      return;
+    }
+    const libraries = (state.setupInfo && state.setupInfo.libraries) || [];
+    const library = libraries.find((item) => item.id === libraryId);
+    if (!library || library.enabled === false) return;
+    state.modalMode = "library-disable";
+    state.libraryDisableTarget = {
+      id: library.id,
+      identifier: library.identifier || "",
+      name: library.name || library.path,
+    };
+    el.modalRoot.innerHTML = `
+      <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Disable Library">
+        <div class="sheet-header">
+          <img class="app-mark-small" src="/static/app-icon.svg" alt="">
+          <div>
+            <div class="sheet-title">Disable Library?</div>
+            <div class="sheet-subtitle">${esc(
+              library.identifier || library.name || library.path
+            )}</div>
+          </div>
+          <button class="sheet-close" type="button"
+                  data-action="disable-library-cancel" title="Close">×</button>
+        </div>
+        <div class="sheet-body">
+          <div class="field-help">
+            Disabling this library stops playback and clears the playback queue
+            and history. Its songs will be hidden throughout WebTracks. The
+            library index, stars, play counts, and playlists remain stored and
+            can be restored by enabling it again.
+          </div>
+          <div class="sheet-actions">
+            <button class="secondary-button" type="button"
+                    data-action="disable-library-cancel">Cancel</button>
+            <button class="danger-button" type="button"
+                    data-action="disable-library-save">Disable</button>
+          </div>
+        </div>
+      </div>`;
+    el.modalRoot.classList.remove("hidden");
+  }
+
+  async function disableLibrary() {
+    const target = state.libraryDisableTarget;
+    if (!target) return;
+    const libraryId = target.id;
+    closeModal();
+    await toggleLibraryEnabled(libraryId, false);
+  }
+
   function openDeleteLibraryDialog(libraryId) {
     if (!state.adminAuthenticated) {
       toast("Log in from Setup to delete a library index.", { error: true });
@@ -5647,6 +5704,138 @@
     }
   }
 
+  function renderMissingSongsReview(summary, job) {
+    const songs = summary.missingSongs || [];
+    state.modalMode = "missing-review";
+    state.setupOpen = true;
+    state.missingSelection = new Set();
+    el.modalRoot.classList.remove("hidden");
+    const rows = songs.map((song) => `
+      <label class="missing-row">
+        <input type="checkbox" data-missing-song-id="${esc(song.id || "")}">
+        <span class="missing-row-main">
+          <span class="missing-row-title">${esc(song.title || "Unknown Title")}</span>
+          <span class="missing-row-meta">${esc(
+            [song.artist, song.album, song.libraryName]
+              .filter(Boolean).join(" — ")
+          )}</span>
+          <span class="missing-row-path">${esc(song.path || "")}</span>
+        </span>
+      </label>`).join("");
+    el.modalRoot.innerHTML = `
+      <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Missing Files">
+        <div class="sheet-header">
+          <img class="app-mark-small" src="/static/app-icon.svg" alt="">
+          <div>
+            <div class="sheet-title">Missing Files</div>
+            <div class="sheet-subtitle">
+              Full Scan found ${songs.length.toLocaleString()} indexed
+              track${songs.length === 1 ? "" : "s"} whose files no longer exist.
+            </div>
+          </div>
+          <button class="sheet-close" type="button" data-action="close-modal"
+                  title="Close">×</button>
+        </div>
+        <div class="sheet-body">
+          <div class="field-help">
+            Choose which indexes to delete, or keep them. Keeping an index
+            preserves its stars, play counts, and playlist entries. Audio files
+            are never modified.
+          </div>
+          <div class="missing-toolbar">
+            <button class="setup-library-action" type="button"
+                    id="missing-select-all">Select All</button>
+            <button class="setup-library-action" type="button"
+                    id="missing-deselect-all">Deselect All</button>
+            <span id="missing-selected-count" class="missing-count"></span>
+          </div>
+          <div class="missing-list">${rows}</div>
+          ${(job.errors || []).length
+            ? `<ul class="scan-error-list">${(job.errors || []).slice(0, 8)
+              .map((error) => `<li>${esc(error)}</li>`).join("")}</ul>`
+            : ""}
+          <div class="sheet-actions">
+            <button class="secondary-button" type="button"
+                    data-action="missing-keep">Keep</button>
+            <button class="danger-button" type="button"
+                    id="missing-delete-button"
+                    data-action="missing-delete" disabled>Delete Selected</button>
+          </div>
+        </div>
+      </div>`;
+    const boxes = $$("[data-missing-song-id]", el.modalRoot);
+    const countNode = $("#missing-selected-count", el.modalRoot);
+    const deleteButton = $("#missing-delete-button", el.modalRoot);
+    const updateSelection = () => {
+      const selected = boxes.filter((box) => box.checked);
+      state.missingSelection = new Set(
+        selected.map((box) => box.dataset.missingSongId)
+      );
+      if (countNode) {
+        countNode.textContent = `${selected.length} of `
+          + `${songs.length} selected`;
+      }
+      if (deleteButton) {
+        deleteButton.disabled = selected.length === 0;
+        deleteButton.textContent = selected.length
+          ? `Delete Selected (${selected.length})` : "Delete Selected";
+      }
+    };
+    boxes.forEach((box) => box.addEventListener("change", updateSelection));
+    const selectAll = $("#missing-select-all", el.modalRoot);
+    if (selectAll) {
+      selectAll.addEventListener("click", () => {
+        boxes.forEach((box) => { box.checked = true; });
+        updateSelection();
+      });
+    }
+    const deselectAll = $("#missing-deselect-all", el.modalRoot);
+    if (deselectAll) {
+      deselectAll.addEventListener("click", () => {
+        boxes.forEach((box) => { box.checked = false; });
+        updateSelection();
+      });
+    }
+    updateSelection();
+  }
+
+  async function deleteMissingIndexes() {
+    const songIds = Array.from(state.missingSelection);
+    if (!songIds.length) return;
+    const button = $("#missing-delete-button", el.modalRoot);
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Deleting…";
+    }
+    try {
+      const data = await api("/api/setup/missing-songs/delete", {
+        method: "POST",
+        headers: adminHeaders(),
+        body: JSON.stringify({ songIds }),
+      });
+      closeModal();
+      await refreshAfterScan();
+      await openSetupModal();
+      toast(`Removed ${Number(data.removed || 0).toLocaleString()} `
+        + `missing track index${Number(data.removed || 0) === 1 ? "" : "es"}`);
+    } catch (error) {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Delete Selected";
+      }
+      if (error.status === 401) {
+        setAdminToken("");
+        state.adminAuthenticated = false;
+        closeModal();
+        await openSetupModal();
+        state.setupError = "Session expired. Enter the admin password again.";
+        renderSetup();
+        return;
+      }
+      toast(error.message, { error: true });
+    }
+  }
+
   function renderScanProgress(job) {
     state.modalMode = "setup";
     state.setupOpen = true;
@@ -5658,6 +5847,12 @@
     const percent = total > 0 ? clamp(completed / total, 0, 1) : 0;
     const errors = (job.errors || []).slice(0, 8);
     const summary = job.summary || null;
+    if (!running && job.phase !== "Error" && summary
+        && Array.isArray(summary.missingSongs)
+        && summary.missingSongs.length) {
+      renderMissingSongsReview(summary, job);
+      return;
+    }
     const progressClass = total > 0 ? "" : "indeterminate";
     let actions;
     if (running) {
@@ -6840,10 +7035,16 @@
       } else if (action === "change-library-location") {
         openChangeLocationDialog(actionEl.dataset.path || "");
       } else if (action === "toggle-library-enabled") {
-        toggleLibraryEnabled(
-          actionEl.dataset.id || "",
-          actionEl.dataset.enabled !== "true",
-        );
+        if (actionEl.dataset.enabled === "true") {
+          openDisableLibraryDialog(actionEl.dataset.id || "");
+        } else {
+          toggleLibraryEnabled(actionEl.dataset.id || "", true);
+        }
+      } else if (action === "disable-library-save") {
+        disableLibrary();
+      } else if (action === "disable-library-cancel") {
+        closeModal();
+        openSetupModal();
       } else if (action === "delete-library") {
         openDeleteLibraryDialog(actionEl.dataset.id || "");
       } else if (action === "delete-library-save") {
@@ -6851,6 +7052,12 @@
       } else if (action === "delete-library-cancel") {
         closeModal();
         openSetupModal();
+      } else if (action === "missing-keep") {
+        closeModal();
+        openSetupModal();
+        toast("Missing track indexes kept");
+      } else if (action === "missing-delete") {
+        deleteMissingIndexes();
       } else if (action === "library-location-save") {
         saveLibraryLocationDialog();
       } else if (action === "library-location-cancel") {

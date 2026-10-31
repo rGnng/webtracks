@@ -480,6 +480,21 @@ class ScanManager:
             self.job["total"] = None if total is None else int(total)
             self.job["message"] = message or ""
 
+    def remove_missing_songs(self, song_ids):
+        """Drop deleted entries from the last scan's missing-file review."""
+
+        removed = {str(song_id) for song_id in song_ids}
+        with self.lock:
+            summary = self.job.get("summary")
+            if not isinstance(summary, dict):
+                return
+            songs = summary.get("missingSongs")
+            if isinstance(songs, list):
+                summary["missingSongs"] = [
+                    song for song in songs
+                    if str(song.get("id") or "") not in removed
+                ]
+
     def start(self, payload):
         if self.config.read_only:
             raise ReadOnlyError("The server is running in read-only mode")
@@ -505,6 +520,7 @@ class ScanManager:
             mode = "quick"
         prune = bool(payload.get("prune"))
         force = bool(payload.get("force"))
+        report_missing = bool(payload.get("report_missing"))
         roots = _database_scan_roots(self.config, db)
         if not roots:
             with self.lock:
@@ -537,6 +553,7 @@ class ScanManager:
                         jpeg_quality=self.config.jpeg_quality,
                         cover_size=self.config.cover_size,
                         force=force,
+                        report_missing=report_missing,
                         progress=self._progress,
                     )
                     summaries.append(result)
@@ -549,6 +566,11 @@ class ScanManager:
                     ),
                     "artwork": sum(result["artwork"] for result in summaries),
                     "missing": sum(result["missing"] for result in summaries),
+                    "missingSongs": [
+                        song
+                        for result in summaries
+                        for song in (result.get("missingSongs") or [])
+                    ],
                     "errors": errors,
                 }
                 self._update(
@@ -1792,6 +1814,75 @@ def create_app(config):
             "backup": os.path.basename(backup),
         })
 
+    @app.post("/api/setup/missing-songs/delete")
+    def api_setup_delete_missing_songs():
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
+        if config.read_only:
+            return _error("The server is running in read-only mode", 403)
+        if scans.snapshot().get("running"):
+            return _error("A scan is already running", 409)
+        if rekeys.snapshot().get("running"):
+            return _error("A ReKey is already running", 409)
+        if artworks.snapshot().get("running"):
+            return _error("An artwork rebuild is already running", 409)
+        body = request.get_json(silent=True) or {}
+        raw_ids = body.get("songIds")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return _error("songIds must be a non-empty list", 400)
+        song_ids = []
+        for raw in raw_ids:
+            song_id = str(raw or "").strip().upper()
+            if not UUID_RE.match(song_id):
+                return _error("Invalid song id", 400)
+            if song_id not in song_ids:
+                song_ids.append(song_id)
+        summary = scans.snapshot().get("summary") or {}
+        missing_by_id = {
+            song.get("id"): song
+            for song in (summary.get("missingSongs") or [])
+            if song.get("id")
+        }
+        selected = [
+            (song_id, missing_by_id[song_id].get("path") or "")
+            for song_id in song_ids
+            if song_id in missing_by_id
+        ]
+        if not selected:
+            return _error(
+                "No selected tracks are in the current missing-file review",
+                409,
+            )
+        paths = [
+            path for _song_id, path in selected
+            if path and not os.path.isfile(path)
+        ]
+        if not paths:
+            return _error("The selected files are no longer missing", 409)
+        db = LibraryDB(config.database, read_only=False)
+        removed, orphan_albums = db.prune_missing(paths)
+        for album_id in orphan_albums:
+            try:
+                os.remove(os.path.join(
+                    config.artwork, "%s.jpg" % album_id.upper()
+                ))
+            except OSError:
+                pass
+        scans.remove_missing_songs([song_id for song_id, _path in selected])
+        catalog.reload()
+        _log_operation(
+            "missing_songs_deleted",
+            "success",
+            actor="admin",
+            requested=len(song_ids),
+            removed=removed,
+        )
+        return _json_response({
+            "requested": len(song_ids),
+            "removed": removed,
+        })
+
     @app.patch("/api/setup/library")
     def api_setup_library():
         unauthorized = _require_admin()
@@ -2033,6 +2124,7 @@ def create_app(config):
                 "mode": mode,
                 "force": force,
                 "prune": False,
+                "report_missing": mode == "full",
             })
             _log_operation(
                 "scan_started", "success", actor="admin",
@@ -2119,6 +2211,12 @@ def create_app(config):
                 "mode": body.get("mode"),
                 "force": bool(body.get("force")),
                 "prune": bool(body.get("prune")),
+                "report_missing": bool(
+                    body.get(
+                        "report_missing",
+                        str(body.get("mode") or "").lower() == "full",
+                    )
+                ),
             })
             _log_operation(
                 "scan_started",
