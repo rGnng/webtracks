@@ -40,6 +40,10 @@ logs_dir: logs
 log_level: INFO
 log_format: text
 
+# Maximum distinct audio items downloaded per source IP in a rolling minute.
+# 0 disables the limit.
+rate_limit: 28
+
 # How album, song, and playlist links are displayed: uuid or base64url.
 url_id_format: uuid
 

@@ -50,6 +50,7 @@ from tracks_db import (
 )
 from tracks_identity import canonical_path, normalize_identifier
 from tracks_logging import configure_logging
+from tracks_rate_limit import DownloadRateLimiter
 from tracks_scanner import DEFAULT_JPEG_QUALITY, scan_one
 
 runtime_log = logging.getLogger("webtracks.runtime")
@@ -80,7 +81,7 @@ class Config:
                  album_sort=None, album_sort_descending=None,
                  admin_password_sha1=None, libraries=None,
                  logs_dir=None, log_level=None, log_format=None,
-                 url_id_format=None):
+                 rate_limit=None, url_id_format=None):
         self.database = os.path.abspath(os.path.expanduser(database))
         self.artwork = os.path.abspath(os.path.expanduser(artwork))
         self.read_only = bool(read_only)
@@ -123,6 +124,12 @@ class Config:
         self.log_format = str(log_format or "text").strip().lower()
         if self.log_format not in ("text", "json"):
             self.log_format = "text"
+        try:
+            self.rate_limit = max(0, int(
+                rate_limit if rate_limit is not None else 28
+            ))
+        except (TypeError, ValueError):
+            self.rate_limit = 28
         self.url_id_format = (
             str(url_id_format or "uuid").strip().lower()
         )
@@ -146,6 +153,7 @@ class Config:
             logs_dir=settings.get("logs_dir"),
             log_level=settings.get("log_level"),
             log_format=settings.get("log_format"),
+            rate_limit=settings.get("rate_limit"),
             url_id_format=settings.get("url_id_format"),
         )
 
@@ -710,6 +718,7 @@ def create_app(config):
     transcode_cache = TranscodeCache(
         config.transcode_cache_mb * 1024 * 1024
     )
+    rate_limiter = DownloadRateLimiter(config.rate_limit)
     app.extensions["tracks_catalog"] = catalog
     app.extensions["tracks_config"] = config
     app.extensions["tracks_scans"] = scans
@@ -717,6 +726,7 @@ def create_app(config):
     app.extensions["tracks_admin_auth"] = admin_auth
     app.extensions["tracks_presence"] = presence
     app.extensions["tracks_transcode_cache"] = transcode_cache
+    app.extensions["tracks_rate_limit"] = rate_limiter
 
     def _admin_token():
         header = (request.headers.get("Authorization") or "").strip()
@@ -980,6 +990,15 @@ def create_app(config):
     def api_cache():
         return _json_response(transcode_cache.stats())
 
+    @app.get("/api/rate-limit")
+    def api_rate_limit():
+        limited, retry_after = rate_limiter.is_limited(_client_ip())
+        return _json_response({
+            "limited": limited,
+            "retryAfter": retry_after,
+            "limit": rate_limiter.limit,
+        })
+
     @app.get("/api/audio/<song_id>")
     def api_audio(song_id):
         song = catalog.song_internal(song_id)
@@ -988,6 +1007,18 @@ def create_app(config):
         path = song.get("_path") or ""
         if not os.path.isfile(path) or not os.access(path, os.R_OK):
             return _error("Audio file is missing", 404)
+
+        allowed, retry_after = rate_limiter.check(_client_ip(), song_id)
+        if not allowed:
+            _log_operation(
+                "download_rate_limited",
+                "blocked",
+                songId=song_id,
+                retryAfter=retry_after,
+            )
+            response = _error("Download rate limit exceeded", 429)
+            response.headers["Retry-After"] = str(retry_after)
+            return response
 
         quality = (request.args.get("quality") or "original").strip()
         spec = QUALITY_BY_ID.get(quality)
@@ -1486,6 +1517,7 @@ def main(argv=None):
         logs_dir=settings["logs_dir"],
         log_level=settings["log_level"],
         log_format=settings["log_format"],
+        rate_limit=settings["rate_limit"],
         url_id_format=settings["url_id_format"],
     )
     host = args.host or settings["host"]
@@ -1606,6 +1638,10 @@ def main(argv=None):
         print("  logs:     %s (%s, %s)" % (
             config.logs_dir, config.log_level, config.log_format
         ))
+    print("  rate:     %s" % (
+        "%d items/min/IP" % config.rate_limit
+        if config.rate_limit else "off"
+    ))
     print("  listening: http://%s:%d" % (host, port))
     app.run(
         host=host,

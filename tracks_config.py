@@ -38,6 +38,7 @@ DEFAULT_SETTINGS = {
     "logs_dir": "logs",
     "log_level": "INFO",
     "log_format": "text",
+    "rate_limit": 28,
     "url_id_format": "uuid",
 }
 
@@ -314,6 +315,16 @@ def load_settings(config_path=None):
     ).strip().lower()
     if log_format not in ("text", "json"):
         log_format = DEFAULT_SETTINGS["log_format"]
+    try:
+        rate_limit = int(
+            os.environ.get(
+                "WEBTRACKS_RATE_LIMIT",
+                values.get("rate_limit", DEFAULT_SETTINGS["rate_limit"]),
+            )
+        )
+    except (TypeError, ValueError):
+        rate_limit = DEFAULT_SETTINGS["rate_limit"]
+    rate_limit = max(0, rate_limit)
     url_id_format = str(
         os.environ.get(
             "WEBTRACKS_URL_ID_FORMAT",
@@ -345,5 +356,6 @@ def load_settings(config_path=None):
         "logs_dir": logs_dir,
         "log_level": log_level,
         "log_format": log_format,
+        "rate_limit": rate_limit,
         "url_id_format": url_id_format,
     }

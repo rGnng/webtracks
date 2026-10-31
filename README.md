@@ -50,6 +50,9 @@ queue overlay, and a 24pt status bar.
   database.
 - Daily runtime and operation logs under `logs/`; archives are gzip-compressed
   at midnight.
+- Per-IP audio download limiting (28 distinct items per minute by default);
+  repeated Range requests for one song count once and the UI stays silent when
+  the limit is reached.
 - All frontend assets live under `static/`; there are no CDN requests.
 
 ## Requirements
@@ -121,6 +124,7 @@ the built-in defaults on first run.
 | `logs_dir` | Directory for `runtime.log` and `operations.log`; default `logs`, relative to `config.yaml`. |
 | `log_level` | Runtime log threshold (`DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`); default `INFO`. The operation log always records at `INFO`. |
 | `log_format` | Format for both log files: `text` (default) or `json`. Text uses timestamped human-readable lines; JSON writes one object per line. |
+| `rate_limit` | Maximum distinct audio items downloaded per source IP in a rolling 60-second window; default `28`. Repeated Range requests for the same song count once. Set to `0` to disable. |
 | `url_id_format` | How album, song, and playlist links are displayed: `uuid` or `base64url`; default `uuid`. Can also be changed from **Setup → Settings**. |
 
 Library IDs and namespaces are **not** configuration values. They live in the
@@ -169,6 +173,8 @@ export WEBTRACKS_TRANSCODE_CACHE_MB=1024
 export WEBTRACKS_ALBUM_SORT=recentlyAdded
 export WEBTRACKS_ALBUM_SORT_DESCENDING=1
 export WEBTRACKS_ADMIN_PASSWORD_SHA1=356a192b7913b04c54574d18c28d46e6395428ab
+export WEBTRACKS_LOG_FORMAT=text
+export WEBTRACKS_RATE_LIMIT=28
 ```
 
 Read-only mode:

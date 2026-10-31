@@ -27,6 +27,7 @@ from tracks_config import (  # noqa: E402
     update_config,
 )
 from tracks_logging import _compress_archive, configure_logging  # noqa: E402
+from tracks_rate_limit import DownloadRateLimiter  # noqa: E402
 from tracks_db import LibraryDB, LibraryCatalog  # noqa: E402
 from tracks_identity import (  # noqa: E402
     album_uuid,
@@ -437,6 +438,21 @@ class ApiTests(unittest.TestCase):
         fallback = self.client.get("/api/artwork/" + self.album_id)
         self.assertEqual(fallback.status_code, 200)
         self.assertEqual(fallback.mimetype, "image/svg+xml")
+
+    def test_audio_rate_limit_is_reported_and_probeable(self):
+        app = self.client.application
+        limiter = app.extensions["tracks_rate_limit"]
+        with mock.patch.object(limiter, "check", return_value=(False, 7)):
+            response = self.client.get("/api/audio/" + self.song_id)
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.headers.get("Retry-After"), "7")
+        with mock.patch.object(
+            limiter, "is_limited", return_value=(True, 6)
+        ):
+            info = self.client.get("/api/rate-limit").get_json()
+        self.assertTrue(info["limited"])
+        self.assertEqual(info["retryAfter"], 6)
+        self.assertEqual(info["limit"], 28)
 
     def test_star_and_playlist(self):
         response = self.client.post(
@@ -979,6 +995,36 @@ class LoggingTests(unittest.TestCase):
                 self._close_loggers((runtime, operations))
 
 
+class RateLimitTests(unittest.TestCase):
+    def test_distinct_items_per_ip_in_sliding_window(self):
+        limiter = DownloadRateLimiter(2, window_seconds=60)
+        self.assertEqual(limiter.check("ip-a", "song-a", now=100), (True, 0))
+        self.assertEqual(limiter.check("ip-a", "song-a", now=101), (True, 0))
+        self.assertEqual(limiter.check("ip-a", "song-b", now=102), (True, 0))
+        allowed, retry_after = limiter.check(
+            "ip-a", "song-c", now=103
+        )
+        self.assertFalse(allowed)
+        self.assertEqual(retry_after, 57)
+        self.assertEqual(
+            limiter.check("ip-b", "song-c", now=103), (True, 0)
+        )
+        limited, retry_after = limiter.is_limited("ip-a", now=104)
+        self.assertTrue(limited)
+        self.assertEqual(retry_after, 56)
+        self.assertEqual(
+            limiter.check("ip-a", "song-c", now=161), (True, 0)
+        )
+
+    def test_zero_limit_disables_rate_limiting(self):
+        limiter = DownloadRateLimiter(0)
+        for index in range(100):
+            self.assertEqual(
+                limiter.check("ip", "song-%d" % index), (True, 0)
+            )
+        self.assertEqual(limiter.is_limited("ip"), (False, 0))
+
+
 class ClientIpTests(unittest.TestCase):
     def setUp(self):
         self.app = Flask(__name__)
@@ -1197,6 +1243,25 @@ class ConfigTests(unittest.TestCase):
                 }, handle)
             with self._clean_env():
                 self.assertEqual(load_settings(path)["log_format"], "json")
+
+    def test_rate_limit_defaults_and_env_override(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.yaml")
+            with open(path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({"database_dir": "var"}, handle)
+            with self._clean_env():
+                self.assertEqual(load_settings(path)["rate_limit"], 28)
+                os.environ["WEBTRACKS_RATE_LIMIT"] = "3"
+                self.assertEqual(load_settings(path)["rate_limit"], 3)
+                os.environ["WEBTRACKS_RATE_LIMIT"] = "invalid"
+                self.assertEqual(load_settings(path)["rate_limit"], 28)
+            with open(path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({
+                    "database_dir": "var",
+                    "rate_limit": 0,
+                }, handle)
+            with self._clean_env():
+                self.assertEqual(load_settings(path)["rate_limit"], 0)
 
     def test_example_config_is_complete_and_not_ignored(self):
         example = os.path.join(ROOT, "config.example.yaml")

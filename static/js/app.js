@@ -5259,22 +5259,33 @@
     nextTrack();
   }
 
-  function handleAudioError() {
+  async function handleAudioError() {
     if (!audio.src) return;
     const song = currentSong();
+    const source = audio.src;
     setAudioBuffering(false);
     player.playing = false;
     player.pendingPlay = false;
     player.pendingRecord = false;
     player.loadedSongId = null;
-    if (song) player.missing.add(song.id);
+    let limited = false;
+    try {
+      const info = await api("/api/rate-limit");
+      limited = Boolean(info && info.limited);
+    } catch (_) {
+      // If the probe fails, keep the normal playback error path.
+    }
+    if (audio.src !== source) return;
+    if (song && !limited) player.missing.add(song.id);
     renderPlayerUI();
     refreshCurrentIndicators();
     updateStatus();
     savePlayerState();
-    toast("This track could not be played. The file may be missing or unsupported.", {
-      error: true,
-    });
+    if (!limited) {
+      toast("This track could not be played. The file may be missing or unsupported.", {
+        error: true,
+      });
+    }
   }
 
   // ---------------------------------------------------------------------
