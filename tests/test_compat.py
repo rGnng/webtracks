@@ -544,10 +544,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(info["retryAfter"], 6)
         self.assertEqual(info["limit"], 28)
 
-    def test_setup_stats_require_admin_and_track_plays(self):
-        self.assertEqual(
-            self.client.get("/api/setup/stats").status_code, 401
-        )
+    def test_setup_stats_public_summary_and_admin_details(self):
+        public = self.client.get("/api/setup/stats")
+        self.assertEqual(public.status_code, 200)
+        public_payload = public.get_json()
+        self.assertNotIn("clients", public_payload)
+        self.assertEqual(set(public_payload["totals"]), {
+            "visitors", "requests", "bytesSent", "songsPlayed",
+            "uniqueSongs", "playlistActions",
+        })
         token = self.client.post(
             "/api/setup/login", json={"password": "1"}
         ).get_json()["token"]

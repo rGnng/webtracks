@@ -1256,14 +1256,29 @@ def create_app(config):
 
     @app.get("/api/setup/stats")
     def api_setup_stats():
-        unauthorized = _require_admin()
-        if unauthorized is not None:
-            return unauthorized
+        authenticated = admin_auth.is_authenticated(_admin_token())
         snapshot = analytics.snapshot()
         online_by_ip = presence.counts_by_ip()
         for client in snapshot["clients"]:
             client["online"] = online_by_ip.get(client["ip"], 0)
         snapshot["totals"]["online"] = sum(online_by_ip.values())
+        if not authenticated:
+            totals = snapshot["totals"]
+            return _json_response({
+                "since": snapshot["since"],
+                "uptimeSeconds": snapshot["uptimeSeconds"],
+                "totals": {
+                    key: totals[key]
+                    for key in (
+                        "visitors",
+                        "requests",
+                        "bytesSent",
+                        "songsPlayed",
+                        "uniqueSongs",
+                        "playlistActions",
+                    )
+                },
+            })
         return _json_response(snapshot)
 
     @app.patch("/api/setup/library")

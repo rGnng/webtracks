@@ -56,10 +56,11 @@ queue overlay, and a 24pt status bar.
 - Per-IP audio download limiting (28 distinct items per minute by default);
   repeated Range requests for one song count once and the UI stays silent when
   the limit is reached.
-- In-memory admin usage statistics: visitors by source IP with current online
-  connection counts, transferred bytes, songs played, playlist actions,
-  scans/ReKey/artwork jobs, and rate-limit events. Statistics reset when the
-  server restarts and are only visible after admin login.
+- In-memory usage statistics: the six summary counters are visible in Setup
+  without logging in, while per-IP details with current online connection
+  counts, transferred bytes, songs played, playlist actions, scans/ReKey/
+  artwork jobs, and rate-limit events appear after admin login. Statistics
+  reset when the server restarts.
 - All frontend assets live under `static/`; there are no CDN requests.
 
 ## Requirements
@@ -273,9 +274,10 @@ and ReKey require signing in first:
 - The development password is `1`
 - While signed out, library folders, action buttons, and settings are hidden or
   greyed out
-- The bottom **Admin** section contains login/logout and password changes; after
-  login it also shows live, in-memory usage statistics (top client IPs,
-  transfer size, songs played, playlist actions, and maintenance counts)
+- **Usage statistics** sits above the bottom **Admin** section. Logged-out
+  visitors see the six summary counters; admin login reveals the per-client
+  table and maintenance counters
+- The bottom **Admin** section contains login/logout and password changes
 
 Once signed in you can:
 

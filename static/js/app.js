@@ -4262,7 +4262,8 @@
       ["Unique songs", Number(totals.uniqueSongs || 0).toLocaleString()],
       ["Playlist actions", Number(totals.playlistActions || 0).toLocaleString()],
     ];
-    const actions = [
+    const detailed = state.adminAuthenticated;
+    const actions = !detailed ? "" : [
       ["Logins", totals.adminLogins],
       ["Scans", totals.scans],
       ["ReKeys", totals.rekeys],
@@ -4272,7 +4273,7 @@
     ].map(([label, value]) => `
       <span><strong>${Number(value || 0).toLocaleString()}</strong> ${esc(label)}</span>`
     ).join("");
-    const clients = stats.clients || [];
+    const clients = detailed ? (stats.clients || []) : [];
     const rows = clients.map((client) => `
       <tr title="First seen ${esc(fmtStatsTime(client.firstSeen, true))} · ${esc(client.userAgent || "")}">
         <td class="setup-stat-ip">${esc(client.ip || "")}</td>
@@ -4301,7 +4302,7 @@
     return `
       <div class="setup-stats-head">
         <div class="field-label">Usage statistics</div>
-        <div class="field-help">Since ${esc(fmtStatsTime(stats.since, true))} · in memory only</div>
+        <div class="field-help">Since ${esc(fmtStatsTime(stats.since, true))}</div>
       </div>
       <div class="setup-stats-grid">
         ${cards.map(([label, value]) => `
@@ -4310,8 +4311,7 @@
             <span class="setup-stat-label">${esc(label)}</span>
           </div>`).join("")}
       </div>
-      <div class="setup-stats-actions">${actions}</div>
-      ${clientHtml}`;
+      ${detailed ? `<div class="setup-stats-actions">${actions}</div>${clientHtml}` : ""}`;
   }
 
   function updateSetupStatsView() {
@@ -4322,8 +4322,7 @@
   function scheduleSetupStatsPoll() {
     if (state.statsTimer) clearTimeout(state.statsTimer);
     state.statsTimer = null;
-    if (state.adminAuthenticated && state.setupOpen
-        && state.modalMode === "setup") {
+    if (state.setupOpen && state.modalMode === "setup") {
       state.statsTimer = setTimeout(refreshSetupStats, 5000);
     }
   }
@@ -4334,8 +4333,8 @@
   }
 
   async function refreshSetupStats() {
-    if (!state.adminAuthenticated || !state.setupOpen
-        || state.modalMode !== "setup" || state.statsInFlight) {
+    if (!state.setupOpen || state.modalMode !== "setup"
+        || state.statsInFlight) {
       return;
     }
     state.statsInFlight = true;
@@ -4485,15 +4484,15 @@
          </div>`;
     const errorHtml = state.setupError
       ? `<div class="field-help setup-error">${esc(state.setupError)}</div>` : "";
-    const statsHtml = state.adminAuthenticated
-      ? `<div id="setup-stats" class="setup-stats">${setupStatsHtml()}</div>`
-      : "";
+    const statsHtml = `
+      <div class="setup-section setup-stats-section">
+        <div id="setup-stats" class="setup-stats">${setupStatsHtml()}</div>
+      </div>`;
     const adminHtml = `
       <div class="setup-section setup-admin-section">
         <div class="field-label">Admin</div>
         ${authHtml}
         ${errorHtml}
-        ${statsHtml}
       </div>`;
     el.modalRoot.innerHTML = `
       <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Setup">
@@ -4534,6 +4533,7 @@
             ${setupStatusHtml()}
           </div>
           ${settingsHtml}
+          ${statsHtml}
           ${adminHtml}
           <div class="sheet-actions">
             <button class="secondary-button" type="button" data-action="close-modal">Close</button>
@@ -4555,11 +4555,7 @@
         }
       });
     }
-    if (state.adminAuthenticated) {
-      refreshSetupStats();
-    } else {
-      stopSetupStatsPoll();
-    }
+    refreshSetupStats();
   }
 
   function openLibraryIdDialog(libraryPath) {
