@@ -13,7 +13,6 @@ import datetime
 import gzip
 import hashlib
 import hmac
-import ipaddress
 import json
 import logging
 import mimetypes
@@ -553,47 +552,6 @@ def _error(message, status=400):
     return _json_response({"error": message}, status=status)
 
 
-def _valid_ip(value):
-    """Return a normalized IP address, or an empty string."""
-
-    value = (value or "").strip().strip('"')
-    if not value:
-        return ""
-    if value.startswith("["):
-        closing = value.find("]")
-        if closing != -1:
-            value = value[1:closing]
-    elif value.count(":") == 1 and "." in value:
-        # IPv4 with an optional port, e.g. "203.0.113.7:54321".
-        host, port = value.rsplit(":", 1)
-        if port.isdigit():
-            value = host
-    try:
-        return str(ipaddress.ip_address(value))
-    except ValueError:
-        return ""
-
-
-def _client_ip():
-    """Resolve the client IP, preferring proxy headers over the socket peer.
-
-    ``X-Forwarded-For`` is checked first, leftmost entry first. ``X-Real-IP``
-    is a fallback, and ``request.remote_addr`` is the final fallback. Invalid
-    or empty values are ignored so a malformed proxy header cannot hide the
-    real source address.
-    """
-
-    forwarded = request.headers.get("X-Forwarded-For") or ""
-    for part in forwarded.split(","):
-        address = _valid_ip(part)
-        if address:
-            return address
-    address = _valid_ip(request.headers.get("X-Real-IP"))
-    if address:
-        return address
-    return request.remote_addr or ""
-
-
 def _log_operation(action, result="ok", **details):
     if not operation_log.handlers:
         return
@@ -604,10 +562,7 @@ def _log_operation(action, result="ok", **details):
         ),
         "action": action,
         "result": result,
-        # remoteIp is the real client as seen through the reverse proxy.
-        "remoteIp": _client_ip(),
-        # proxyIp is the direct socket peer (usually the reverse proxy).
-        "proxyIp": request.remote_addr or "",
+        "remoteIp": request.remote_addr or "",
         "forwardedFor": forwarded,
         "userAgent": request.headers.get("User-Agent") or "",
         "method": request.method,
