@@ -203,6 +203,14 @@
     return `<svg class="icon ${className}"><use href="#i-${name}"></use></svg>`;
   }
 
+  function spinnerHtml(className = "") {
+    const bars = Array.from(
+      { length: 12 },
+      (_, index) => `<span style="--i:${index}"></span>`,
+    ).join("");
+    return `<span class="apple-spinner${className ? ` ${className}` : ""}" aria-hidden="true">${bars}</span>`;
+  }
+
   function clamp(value, minimum, maximum) {
     return Math.min(Math.max(value, minimum), maximum);
   }
@@ -397,7 +405,7 @@
   function renderLoading(message = "Loading…") {
     setContent(`
       <div class="center-state">
-        <div class="spinner"></div>
+        ${spinnerHtml()}
         <div class="state-note">${esc(message)}</div>
       </div>`);
   }
@@ -1488,7 +1496,7 @@
 
   function playlistLoadingHtml(message) {
     return `<div class="center-state">
-      <div class="spinner"></div>
+      ${spinnerHtml()}
       <div class="state-note">${esc(message)}</div>
     </div>`;
   }
@@ -4160,7 +4168,7 @@
         </div>
         <div class="sheet-body">
           <div class="center-state">
-            <div class="spinner"></div>
+            ${spinnerHtml()}
             <div class="state-note">Loading Setup…</div>
           </div>
         </div>
@@ -4956,7 +4964,7 @@
         </div>
         <div class="sheet-body">
           <div class="center-state">
-            <div class="spinner"></div>
+            ${spinnerHtml()}
             <div class="state-note">Starting ReKey…</div>
           </div>
         </div>
@@ -5029,7 +5037,7 @@
         <div class="sheet-body">
           <div class="scan-progress">
             <div class="scan-progress-head">
-              ${running ? '<span class="spinner"></span>' : ""}
+              ${running ? spinnerHtml("compact") : ""}
               <span>${esc(phase)}</span>
               <span class="tabular" style="margin-left:auto;color:var(--text-2)">
                 ${total > 0 ? `${completed.toLocaleString()} / ${total.toLocaleString()}` : ""}
@@ -5122,7 +5130,7 @@
         <div class="sheet-body">
           <div class="scan-progress">
             <div class="scan-progress-head">
-              ${running ? '<span class="spinner"></span>' : ""}
+              ${running ? spinnerHtml("compact") : ""}
               <span>${esc(phase)}</span>
             </div>
             <div class="progress-track">
@@ -5188,7 +5196,7 @@
         </div>
         <div class="sheet-body">
           <div class="center-state">
-            <div class="spinner"></div>
+            ${spinnerHtml()}
             <div class="state-note">Preparing cover cache…</div>
           </div>
         </div>
@@ -5263,7 +5271,7 @@
         <div class="sheet-body">
           <div class="scan-progress">
             <div class="scan-progress-head">
-              ${running ? '<span class="spinner"></span>' : ""}
+              ${running ? spinnerHtml("compact") : ""}
               <span>${esc(phase)}</span>
               <span class="tabular" style="margin-left:auto;color:var(--text-2)">
                 ${total > 0 ? `${completed.toLocaleString()} / ${total.toLocaleString()}` : ""}
