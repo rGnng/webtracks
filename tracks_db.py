@@ -1340,7 +1340,12 @@ class LibraryCatalog:
 
     @staticmethod
     def public_song(song):
-        return {key: value for key, value in song.items() if not key.startswith("_")}
+        return {
+            key: value
+            for key, value in song.items()
+            if not key.startswith("_")
+            and key not in ("comments", "lastPlayed", "skipCount")
+        }
 
     @staticmethod
     def public_album(album):

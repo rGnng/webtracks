@@ -542,6 +542,22 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(fallback.status_code, 200)
         self.assertEqual(fallback.mimetype, "image/svg+xml")
 
+    def test_public_songs_hide_private_metadata(self):
+        private_keys = ("comments", "lastPlayed", "skipCount")
+        songs = self.client.get("/api/songs").get_json()["songs"]
+        for key in private_keys:
+            self.assertNotIn(key, songs[0])
+        single = self.client.get(
+            "/api/songs/" + self.song_id
+        ).get_json()["song"]
+        for key in private_keys:
+            self.assertNotIn(key, single)
+        album = self.client.get(
+            "/api/albums/" + self.album_id
+        ).get_json()["songs"][0]
+        for key in private_keys:
+            self.assertNotIn(key, album)
+
     def test_server_header_is_hidden_or_configured(self):
         self.assertNotIn("Server", self.client.get("/api/health").headers)
         app = create_app(

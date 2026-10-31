@@ -38,6 +38,8 @@ queue overlay, and a 24pt status bar.
 - Song stars and play counts are written to the project's own Tracks-compatible
   database. A play is counted when a new audio playback session requests the
   stream; repeated Range requests for one playback are counted once.
+- Public song payloads omit tag comments, last-played timestamps, and skip
+  counts; those values remain in `library.sqlite` for compatibility.
 - Play queue: Up Next / History, Play Next, Play Later, Shuffle, Repeat.
 - The queue and playback position are stored in browser `localStorage` and
   restored paused after a reload.
