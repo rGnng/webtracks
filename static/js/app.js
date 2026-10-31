@@ -4196,14 +4196,6 @@
           <div class="setup-section">
             <div class="field-label">Libraries</div>
             ${setupLibrariesHtml(enabled, state.adminAuthenticated)}
-          </div>
-          <div class="setup-section">
-            ${authHtml}
-            ${errorHtml}
-          </div>
-          ${settingsHtml}
-          <div class="setup-section">
-            <div class="field-label">Operations</div>
             <div class="setup-actions">
               <button class="secondary-button" type="button"
                       data-action="setup-quick-scan" ${disabled}>
@@ -4218,8 +4210,13 @@
                 ReKey Database
               </button>
             </div>
+            ${setupStatusHtml()}
           </div>
-          ${setupStatusHtml()}
+          <div class="setup-section">
+            ${authHtml}
+            ${errorHtml}
+          </div>
+          ${settingsHtml}
           <div class="sheet-actions">
             <button class="secondary-button" type="button" data-action="close-modal">Close</button>
           </div>
