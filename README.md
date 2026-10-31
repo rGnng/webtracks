@@ -320,6 +320,12 @@ Once signed in you can:
   with `~`) and optionally a library identifier. The folder is indexed
   read-only, must not overlap an existing library, and a Quick Scan starts
   immediately;
+- **Disable / Enable Library**: hide a library's songs from the player and
+  scans without deleting its index. Disabling stops playback and clears the
+  queue and history; enabling starts a Quick Scan;
+- **Delete Index**: only available for a disabled library. This removes its
+  indexed songs, stars, play counts, and playlist entries but keeps audio files
+  and user-created playlists; a timestamped SQLite backup is written first;
 - **Change Location**: re-root an existing library. Songs are matched by their
   relative paths, stars, play counts, playlists, and IDs are preserved, and a
   timestamped SQLite backup is written first. Missing files stay indexed until
@@ -346,9 +352,11 @@ Once signed in you can:
   revoked, and you must log in again with the new password.
 
 The Setup library list shows each library's ID with its current namespace in
-grey. The music folder path is only shown after signing in. Adding libraries
-and changing their location are admin-only actions; both run against folders on
-the server machine. The backend only scans libraries already stored in the
+grey. Disabled libraries stay in the list with an **Enable** button and can be
+deleted after disabling. The music folder path is only shown after signing in.
+Adding libraries, changing their location, disabling/enabling them, and deleting
+their index are admin-only actions; all run against folders on the server
+machine. The backend only scans enabled libraries already stored in the
 database. Scans run in a background thread, the Setup window shows progress, and
 the library refreshes automatically when a scan finishes.
 

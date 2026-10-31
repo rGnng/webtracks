@@ -2600,10 +2600,11 @@ button:disabled {
 }
 
 .setup-library-actions {
-  flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
+  margin-top: 6px;
 }
 
 .setup-library-action {
@@ -2623,6 +2624,37 @@ button:disabled {
 
 .setup-library-action:disabled {
   opacity: 0.32;
+}
+
+.setup-library-action.danger {
+  color: var(--danger);
+}
+
+.setup-library-action.danger:hover:not(:disabled) {
+  background: rgba(255, 107, 100, 0.12);
+}
+
+.setup-library-toggle {
+  min-width: 54px;
+  color: var(--text);
+}
+
+.setup-library-toggle[data-enabled="false"] {
+  color: var(--selection-stroke);
+}
+
+.setup-library.disabled .setup-library-name,
+.setup-library.disabled .setup-library-path {
+  color: var(--text-3);
+}
+
+.setup-library-badge {
+  flex: 0 0 auto;
+  color: var(--text-3);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .setup-library-path {

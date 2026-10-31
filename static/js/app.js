@@ -98,6 +98,7 @@
     playlistDialog: null,
     libraryIdTarget: null,
     libraryLocationTarget: null,
+    libraryDeleteTarget: null,
     addToPlaylistIds: [],
     lastPersistAt: 0,
     doneInitialLoad: false,
@@ -4323,6 +4324,7 @@
     state.playlistDialog = null;
     state.libraryIdTarget = null;
     state.libraryLocationTarget = null;
+    state.libraryDeleteTarget = null;
     state.addToPlaylistIds = [];
     state.addToPlaylistSongs = [];
     el.modalRoot.classList.add("hidden");
@@ -4433,8 +4435,23 @@
       return `<div class="field-help">No libraries are in the database. Use
         Add Library below, or run <code>python3 server.py scan --root PATH</code>.</div>`;
     }
-    return `<div class="setup-libraries">${libraries.map((library) => `
-      <div class="setup-library">
+    return `<div class="setup-libraries">${libraries.map((library) => {
+      const libraryEnabled = library.enabled !== false;
+      const toggleTitle = canEdit
+        ? (libraryEnabled ? "Disable this library" : "Enable this library")
+        : "Log in to change the library state";
+      const locationTitle = !canEdit
+        ? "Log in to change the location"
+        : (libraryEnabled
+          ? "Change the library folder"
+          : "Enable the library before changing its location");
+      const deleteTitle = !canEdit
+        ? "Log in to delete a library"
+        : (libraryEnabled
+          ? "Disable the library before deleting it"
+          : "Delete this library index");
+      return `
+      <div class="setup-library${libraryEnabled ? "" : " disabled"}">
         <div class="setup-library-head">
           <div class="setup-library-title">
             <span class="setup-library-name">${esc(
@@ -4443,28 +4460,44 @@
             <span class="setup-library-namespace">current namespace: ${esc(
               library.namespace || "—"
             )}</span>
+            ${libraryEnabled ? "" : '<span class="setup-library-badge">Disabled</span>'}
           </div>
-          <div class="setup-library-actions">
-            <button class="setup-library-action" type="button"
-                    data-action="change-library-location"
-                    data-path="${esc(library.path || "")}"
-                    title="${canEdit ? "Change the library folder" : "Log in to change the location"}"
-                    ${canEdit ? "" : "disabled"}>
-              Change Location…
-            </button>
-            <button class="setup-library-action" type="button"
-                    data-action="edit-library-id"
-                    data-path="${esc(library.path || "")}"
-                    title="${canEdit ? "Change Library ID" : "Log in to change the Library ID"}"
-                    ${canEdit ? "" : "disabled"}>
-              Change ID
-            </button>
-          </div>
+          <button class="setup-library-action setup-library-toggle" type="button"
+                  data-action="toggle-library-enabled"
+                  data-id="${esc(library.id || "")}"
+                  data-enabled="${libraryEnabled ? "true" : "false"}"
+                  title="${toggleTitle}" ${canEdit ? "" : "disabled"}>
+            ${libraryEnabled ? "Disable" : "Enable"}
+          </button>
         </div>
         ${showPath && library.path
           ? `<div class="setup-library-path">${esc(library.path)}</div>`
           : ""}
-      </div>`).join("")}</div>`;
+        <div class="setup-library-actions">
+          <button class="setup-library-action" type="button"
+                  data-action="change-library-location"
+                  data-path="${esc(library.path || "")}"
+                  title="${locationTitle}"
+                  ${canEdit && libraryEnabled ? "" : "disabled"}>
+            Change Location…
+          </button>
+          <button class="setup-library-action" type="button"
+                  data-action="edit-library-id"
+                  data-path="${esc(library.path || "")}"
+                  title="${canEdit ? "Change Library ID" : "Log in to change the Library ID"}"
+                  ${canEdit ? "" : "disabled"}>
+            Change ID
+          </button>
+          <button class="setup-library-action danger" type="button"
+                  data-action="delete-library"
+                  data-id="${esc(library.id || "")}"
+                  title="${deleteTitle}"
+                  ${canEdit && !libraryEnabled ? "" : "disabled"}>
+            Delete Index…
+          </button>
+        </div>
+      </div>`;
+    }).join("")}</div>`;
   }
 
   function fmtStatsTime(value, full = false) {
@@ -5362,6 +5395,154 @@
       if (button) {
         button.disabled = false;
         button.textContent = "Change Location";
+      }
+      if (error.status === 401) {
+        setAdminToken("");
+        state.adminAuthenticated = false;
+        closeModal();
+        await openSetupModal();
+        state.setupError = "Session expired. Enter the admin password again.";
+        renderSetup();
+        return;
+      }
+      if (errorNode) errorNode.textContent = error.message;
+    }
+  }
+
+  function stopPlaybackAndClear() {
+    try { audio.pause(); } catch (_) {}
+    try {
+      audio.removeAttribute("src");
+      audio.load();
+    } catch (_) {}
+    player.queue = [];
+    player.baseQueue = [];
+    player.index = -1;
+    player.playing = false;
+    player.elapsed = 0;
+    player.history = [];
+    player.pendingRecord = false;
+    player.pendingSeek = null;
+    player.pendingPlay = false;
+    player.loadedSongId = null;
+    state.lcdSongId = null;
+    state.seekPreview = null;
+    setAudioBuffering(false);
+    savePlayer();
+    renderPlayerUI();
+    refreshCurrentIndicators();
+    updateStatus();
+    if (state.queueOpen) renderQueuePopover();
+  }
+
+  async function toggleLibraryEnabled(libraryId, enabled) {
+    if (!state.adminAuthenticated) {
+      toast("Log in from Setup to change a library's state.", { error: true });
+      return;
+    }
+    try {
+      await api("/api/setup/library/enabled", {
+        method: "PATCH",
+        headers: adminHeaders(),
+        body: JSON.stringify({ id: libraryId, enabled }),
+      });
+      if (!enabled) stopPlaybackAndClear();
+      await refreshAfterScan();
+      await openSetupModal();
+      toast(enabled
+        ? "Library enabled. Starting a Quick Scan…"
+        : "Library disabled");
+      if (enabled) startSetupScan("quick");
+    } catch (error) {
+      if (error.status === 401) {
+        setAdminToken("");
+        state.adminAuthenticated = false;
+        closeModal();
+        await openSetupModal();
+        state.setupError = "Session expired. Enter the admin password again.";
+        renderSetup();
+        return;
+      }
+      toast(error.message, { error: true });
+      await openSetupModal();
+    }
+  }
+
+  function openDeleteLibraryDialog(libraryId) {
+    if (!state.adminAuthenticated) {
+      toast("Log in from Setup to delete a library index.", { error: true });
+      return;
+    }
+    const libraries = (state.setupInfo && state.setupInfo.libraries) || [];
+    const library = libraries.find((item) => item.id === libraryId);
+    if (!library) return;
+    if (library.enabled !== false) {
+      toast("Disable the library before deleting its index.", { error: true });
+      return;
+    }
+    state.modalMode = "library-delete";
+    state.libraryDeleteTarget = {
+      id: library.id,
+      identifier: library.identifier || "",
+      name: library.name || library.path,
+      path: library.path || "",
+    };
+    el.modalRoot.innerHTML = `
+      <div class="sheet setup-sheet" role="dialog" aria-modal="true" aria-label="Delete Library Index">
+        <div class="sheet-header">
+          <img class="app-mark-small" src="/static/app-icon.svg" alt="">
+          <div>
+            <div class="sheet-title">Delete Library Index</div>
+            <div class="sheet-subtitle">${esc(
+              library.identifier || library.name || library.path
+            )}</div>
+          </div>
+          <button class="sheet-close" type="button"
+                  data-action="delete-library-cancel" title="Close">×</button>
+        </div>
+        <div class="sheet-body">
+          <div class="field-help">
+            This removes the library's index, songs, stars, play counts, and
+            playlist entries from WebTracks. Audio files and user playlists are
+            not deleted. A timestamped database backup is written first.
+          </div>
+          ${library.path ? `<div class="field-help"><code>${esc(library.path)}</code></div>` : ""}
+          <div id="delete-library-error" class="field-help setup-error"></div>
+          <div class="sheet-actions">
+            <button class="secondary-button" type="button"
+                    data-action="delete-library-cancel">Cancel</button>
+            <button class="danger-button" type="button"
+                    data-action="delete-library-save">Delete Index</button>
+          </div>
+        </div>
+      </div>`;
+    el.modalRoot.classList.remove("hidden");
+  }
+
+  async function deleteLibraryIndex() {
+    const target = state.libraryDeleteTarget;
+    const errorNode = $("#delete-library-error", el.modalRoot);
+    if (!target) return;
+    const button = $('[data-action="delete-library-save"]', el.modalRoot);
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Deleting…";
+    }
+    try {
+      const data = await api("/api/setup/library/delete", {
+        method: "POST",
+        headers: adminHeaders(),
+        body: JSON.stringify({ id: target.id }),
+      });
+      closeModal();
+      await refreshAfterScan();
+      await openSetupModal();
+      toast(`Library index deleted; ${Number(data.removed || 0).toLocaleString()} `
+        + `song${Number(data.removed || 0) === 1 ? "" : "s"} removed`);
+    } catch (error) {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Delete Index";
       }
       if (error.status === 401) {
         setAdminToken("");
@@ -6658,6 +6839,18 @@
         openSetupModal();
       } else if (action === "change-library-location") {
         openChangeLocationDialog(actionEl.dataset.path || "");
+      } else if (action === "toggle-library-enabled") {
+        toggleLibraryEnabled(
+          actionEl.dataset.id || "",
+          actionEl.dataset.enabled !== "true",
+        );
+      } else if (action === "delete-library") {
+        openDeleteLibraryDialog(actionEl.dataset.id || "");
+      } else if (action === "delete-library-save") {
+        deleteLibraryIndex();
+      } else if (action === "delete-library-cancel") {
+        closeModal();
+        openSetupModal();
       } else if (action === "library-location-save") {
         saveLibraryLocationDialog();
       } else if (action === "library-location-cancel") {

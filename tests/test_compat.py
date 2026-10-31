@@ -1187,6 +1187,101 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(audio.status_code, 200)
         audio.close()
 
+    def test_setup_library_toggle_and_delete_index(self):
+        setup = self.client.get("/api/setup").get_json()
+        library_id = setup["libraries"][0]["id"]
+        playlist_id = self.db.create_playlist("Keep Empty")
+        self.db.add_songs_to_playlist(playlist_id, [self.song_id])
+
+        self.assertEqual(
+            self.client.patch(
+                "/api/setup/library/enabled",
+                json={"id": library_id, "enabled": False},
+            ).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/setup/library/delete", json={"id": library_id}
+            ).status_code,
+            401,
+        )
+        token = self.client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        headers = {"Authorization": "Bearer " + token}
+
+        self.assertEqual(
+            self.client.post(
+                "/api/setup/library/delete",
+                json={"id": library_id},
+                headers=headers,
+            ).status_code,
+            409,
+        )
+        disabled = self.client.patch(
+            "/api/setup/library/enabled",
+            json={"id": library_id, "enabled": False},
+            headers=headers,
+        )
+        self.assertEqual(disabled.status_code, 200)
+        self.assertFalse(disabled.get_json()["library"]["enabled"])
+        setup = self.client.get("/api/setup", headers=headers).get_json()
+        self.assertFalse(setup["libraries"][0]["enabled"])
+        self.assertEqual(
+            self.client.get("/api/bootstrap").get_json()["libraryStats"]["songCount"],
+            0,
+        )
+
+        enabled = self.client.patch(
+            "/api/setup/library/enabled",
+            json={"id": library_id, "enabled": True},
+            headers=headers,
+        )
+        self.assertEqual(enabled.status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/bootstrap").get_json()["libraryStats"]["songCount"],
+            1,
+        )
+        self.client.patch(
+            "/api/setup/library/enabled",
+            json={"id": library_id, "enabled": False},
+            headers=headers,
+        )
+        deleted = self.client.post(
+            "/api/setup/library/delete",
+            json={"id": library_id},
+            headers=headers,
+        )
+        self.assertEqual(deleted.status_code, 200)
+        data = deleted.get_json()
+        self.assertEqual(data["removed"], 1)
+        self.assertTrue(
+            os.path.isfile(os.path.join(self.root, data["backup"]))
+        )
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM libraries").fetchone()[0], 0
+        )
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM songs").fetchone()[0], 0
+        )
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM playlists WHERE id = ?",
+                         (playlist_id,)).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM playlist_items").fetchone()[0],
+            0,
+        )
+        conn.close()
+        self.assertEqual(
+            self.client.get("/api/setup", headers=headers).get_json()["libraries"],
+            [],
+        )
+
     def test_legacy_config_paths_seed_database_once(self):
         legacy_db = os.path.join(self.root, "legacy.sqlite")
         app = create_app(

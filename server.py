@@ -1480,18 +1480,24 @@ def create_app(config):
 
     @app.get("/api/setup")
     def api_setup():
-        configured = _database_scan_roots(config)
+        try:
+            configured = LibraryDB(
+                config.database, read_only=True
+            ).load_libraries()
+        except Exception:
+            configured = []
         authenticated = admin_auth.is_authenticated(_admin_token())
         libraries = []
         for item in configured:
             entry = {
                 "id": item.get("id"),
-                "name": item["name"],
-                "identifier": item["identifier"],
-                "namespace": item["namespace"],
+                "name": item.get("name"),
+                "identifier": item.get("identifier"),
+                "namespace": item.get("id_namespace"),
+                "enabled": bool(item.get("enabled", True)),
             }
             if authenticated:
-                entry["path"] = item["path"]
+                entry["path"] = item.get("path")
             libraries.append(entry)
         return _json_response({
             "name": "Setup",
@@ -1636,6 +1642,8 @@ def create_app(config):
         )
         if target is None:
             return _error("Library not found in the database", 404)
+        if not target.get("enabled", True):
+            return _error("Enable the library before changing its location", 409)
         for library in libraries:
             if library.get("id") == target.get("id"):
                 continue
@@ -1678,6 +1686,109 @@ def create_app(config):
             "moved": result["moved"],
             "total": result["total"],
             "missing": result["missing"],
+            "backup": os.path.basename(backup),
+        })
+
+    @app.patch("/api/setup/library/enabled")
+    def api_setup_library_enabled():
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
+        if config.read_only:
+            return _error("The server is running in read-only mode", 403)
+        if scans.snapshot().get("running"):
+            return _error("A scan is already running", 409)
+        if rekeys.snapshot().get("running"):
+            return _error("A ReKey is already running", 409)
+        if artworks.snapshot().get("running"):
+            return _error("An artwork rebuild is already running", 409)
+        body = request.get_json(silent=True) or {}
+        library_id = str(body.get("id") or "").strip().upper()
+        if not UUID_RE.match(library_id):
+            return _error("Invalid library id", 400)
+        if not isinstance(body.get("enabled"), bool):
+            return _error("enabled must be true or false", 400)
+        enabled = bool(body["enabled"])
+        db = LibraryDB(config.database, read_only=False)
+        try:
+            updated = db.set_library_enabled(library_id, enabled)
+        except (ReadOnlyError, ValueError) as exc:
+            return _error(str(exc), 404)
+        catalog.reload()
+        _log_operation(
+            "library_enabled_changed",
+            "success",
+            actor="admin",
+            path=updated.get("path"),
+            identifier=updated.get("identifier"),
+            enabled=enabled,
+        )
+        return _json_response({
+            "library": {
+                "id": updated.get("id"),
+                "path": updated.get("path"),
+                "name": updated.get("name"),
+                "identifier": updated.get("identifier"),
+                "namespace": updated.get("id_namespace"),
+                "enabled": bool(updated.get("enabled", True)),
+            }
+        })
+
+    @app.post("/api/setup/library/delete")
+    def api_setup_delete_library():
+        unauthorized = _require_admin()
+        if unauthorized is not None:
+            return unauthorized
+        if config.read_only:
+            return _error("The server is running in read-only mode", 403)
+        if scans.snapshot().get("running"):
+            return _error("A scan is already running", 409)
+        if rekeys.snapshot().get("running"):
+            return _error("A ReKey is already running", 409)
+        if artworks.snapshot().get("running"):
+            return _error("An artwork rebuild is already running", 409)
+        body = request.get_json(silent=True) or {}
+        library_id = str(body.get("id") or "").strip().upper()
+        if not UUID_RE.match(library_id):
+            return _error("Invalid library id", 400)
+        db = LibraryDB(config.database, read_only=False)
+        target = next(
+            (
+                library for library in db.load_libraries()
+                if library.get("id") == library_id
+            ),
+            None,
+        )
+        if target is None:
+            return _error("Library not found in the database", 404)
+        if target.get("enabled", True):
+            return _error("Disable the library before deleting it", 409)
+        try:
+            backup = db.backup("delete-backup")
+            result = db.delete_library(library_id)
+        except (ReadOnlyError, ValueError) as exc:
+            return _error(str(exc), 409)
+        except OSError as exc:
+            return _error("Could not delete the library: %s" % exc, 500)
+        for album_id in result.get("orphanAlbums") or []:
+            try:
+                os.remove(os.path.join(
+                    config.artwork, "%s.jpg" % album_id.upper()
+                ))
+            except OSError:
+                pass
+        catalog.reload()
+        _log_operation(
+            "library_deleted",
+            "success",
+            actor="admin",
+            path=target.get("path"),
+            identifier=target.get("identifier"),
+            songs=result["removed"],
+            backup=os.path.basename(backup),
+        )
+        return _json_response({
+            "removed": result["removed"],
             "backup": os.path.basename(backup),
         })
 

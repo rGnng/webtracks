@@ -437,6 +437,108 @@ class LibraryDB:
         finally:
             conn.close()
 
+    def set_library_enabled(self, library_id, enabled):
+        """Enable or disable one library without deleting its index."""
+
+        if self.read_only:
+            raise ReadOnlyError("The database is open in read-only mode")
+        self.ensure_schema()
+        conn = connect(self.path, read_only=False)
+        try:
+            row = conn.execute(
+                "SELECT id FROM libraries WHERE id = ?", (library_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Library not found in the database")
+            with conn:
+                conn.execute(
+                    "UPDATE libraries SET enabled = ? WHERE id = ?",
+                    (1 if enabled else 0, library_id),
+                )
+            row = conn.execute(
+                "SELECT id, path, name, identifier, id_namespace, enabled, "
+                "date_added FROM libraries WHERE id = ?",
+                (library_id,),
+            ).fetchone()
+            return self._library_row(row)
+        finally:
+            conn.close()
+
+    def delete_library(self, library_id):
+        """Delete a disabled library index, its songs, and playlist entries.
+
+        Audio files, playlists, and songs from other libraries are untouched.
+        The caller is responsible for writing a database backup first.
+        """
+
+        if self.read_only:
+            raise ReadOnlyError("The database is open in read-only mode")
+        self.ensure_schema()
+        conn = connect(self.path, read_only=False)
+        try:
+            library = conn.execute(
+                "SELECT id, path, name, identifier, id_namespace, enabled, "
+                "date_added FROM libraries WHERE id = ?",
+                (library_id,),
+            ).fetchone()
+            if library is None:
+                raise ValueError("Library not found in the database")
+            if library["enabled"]:
+                raise ValueError("Disable the library before deleting it")
+
+            song_rows = conn.execute(
+                "SELECT id FROM songs WHERE library_id = ?", (library_id,)
+            ).fetchall()
+            song_ids = [row["id"] for row in song_rows]
+            albums_before = {
+                row[0] for row in conn.execute("SELECT id FROM albums")
+            }
+            with conn:
+                if song_ids:
+                    marks = ",".join("?" for _ in song_ids)
+                    playlist_ids = [
+                        row["playlist_id"] for row in conn.execute(
+                            "SELECT DISTINCT playlist_id FROM playlist_items"
+                            " WHERE song_id IN (%s)" % marks,
+                            song_ids,
+                        )
+                    ]
+                    for playlist_id in playlist_ids:
+                        conn.execute(
+                            "UPDATE playlists SET date_modified = ? WHERE id = ?",
+                            (_now(), playlist_id),
+                        )
+                    conn.execute(
+                        "DELETE FROM playlist_items WHERE song_id IN (%s)" % marks,
+                        song_ids,
+                    )
+                    conn.execute(
+                        "DELETE FROM songs WHERE id IN (%s)" % marks,
+                        song_ids,
+                    )
+                conn.execute(
+                    "DELETE FROM libraries WHERE id = ?", (library_id,)
+                )
+                conn.execute(
+                    "DELETE FROM albums WHERE id NOT IN "
+                    "(SELECT DISTINCT album_id FROM songs)"
+                )
+                conn.execute(
+                    "DELETE FROM artists WHERE id NOT IN ("
+                    " SELECT artist_id FROM songs"
+                    " UNION SELECT artist_id FROM albums)"
+                )
+            albums_after = {
+                row[0] for row in conn.execute("SELECT id FROM albums")
+            }
+            return {
+                "library": self._library_row(library),
+                "removed": len(song_ids),
+                "orphanAlbums": sorted(albums_before - albums_after),
+            }
+        finally:
+            conn.close()
+
     def sync_libraries(self, libraries):
         """Ensure every supplied folder has a library row.
 
