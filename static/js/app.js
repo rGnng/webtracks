@@ -67,6 +67,8 @@
     songVirtual: null,
     browserGroups: [],
     browserKind: null,
+    browserFocus: "list",
+    browserAlbumAnchor: null,
     viewToken: 0,
     contentCleanup: null,
     queueOpen: false,
@@ -1291,6 +1293,10 @@
     }
     const previousAlbumId = state.albumDetail
       ? state.albumDetail.id : null;
+    if (section !== state.section) {
+      state.browserFocus = "list";
+      state.browserAlbumAnchor = null;
+    }
     state.section = section;
     state.playlistId = playlistId;
     state.albumDetail = null;
@@ -2780,6 +2786,10 @@
       }).catch((error) => renderErrorState(error.message));
       return;
     }
+    if (state.browserKind !== kind) {
+      state.browserFocus = "list";
+      state.browserAlbumAnchor = null;
+    }
     state.browserKind = kind;
     let groups = kind === "artists" ? buildArtistGroups() : buildGenreGroups();
     if (state.query) {
@@ -2829,6 +2839,7 @@
   }
 
   function selectBrowserGroup(kind, name) {
+    state.browserFocus = "list";
     setBrowserSelectedName(kind, name);
     if (kind === "artists" && !routeApplying) {
       syncRoute(artistRoute(name));
@@ -2854,6 +2865,10 @@
     const orderedSongs = albums.flatMap((album) =>
       state.songsByAlbum.get(album.id) || []);
     state.songRows = orderedSongs;
+    if (!state.browserAlbumAnchor
+        || !albums.some((album) => album.id === state.browserAlbumAnchor)) {
+      state.browserAlbumAnchor = albums.length ? albums[0].id : null;
+    }
     const title = kind === "genres"
       ? (group.name || "#Unknown")
       : group.name;
@@ -2900,7 +2915,8 @@
           </div>`;
       }).join("");
       return `
-        <div class="browser-album" data-browser-album-id="${esc(album.id)}">
+        <div class="browser-album${album.id === state.browserAlbumAnchor ? " selected" : ""}"
+             data-browser-album-id="${esc(album.id)}">
           <div class="browser-album-head">
             <div class="browser-album-art">
               <img src="${artURL(album.id)}" alt="" loading="lazy">
@@ -5530,6 +5546,9 @@
         break;
       case "browser-play-album": {
         const albumId = actionEl.dataset.albumId;
+        state.browserFocus = "pane";
+        state.browserAlbumAnchor = albumId;
+        updateBrowserAlbumSelection();
         const songs = state.songsByAlbum.get(albumId) || [];
         if (songs.length) playCollection(songs, 0);
         break;
@@ -5795,6 +5814,13 @@
     selectSongByIndex(index);
   }
 
+  function songPageSize() {
+    const scroller = $("#song-scroll", el.content);
+    return Math.max(
+      1, Math.floor((scroller ? scroller.clientHeight : 400) / 26)
+    );
+  }
+
   function moveAlbumSelection(horizontalDelta, verticalDelta) {
     const list = currentSectionAlbumList();
     if (!list.length) return;
@@ -5833,11 +5859,85 @@
     let index = groups.findIndex((group) => group.name === selectedName);
     if (index < 0) index = delta > 0 ? 0 : groups.length - 1;
     else index = clamp(index + delta, 0, groups.length - 1);
-    const group = groups[index];
+    selectBrowserGroupAt(index);
+  }
+
+  function selectBrowserGroupAt(index) {
+    const groups = state.browserGroups || [];
+    if (!groups.length) return;
+    const safe = clamp(index, 0, groups.length - 1);
+    const group = groups[safe];
     selectBrowserGroup(state.browserKind, group.name);
     const row = Array.from(document.querySelectorAll(".browser-row"))
       .find((item) => item.dataset.name === group.name);
     if (row) row.scrollIntoView({ block: "nearest" });
+  }
+
+  function currentBrowserGroup() {
+    const groups = state.browserGroups || [];
+    const selectedName = browserGroupSelectedName(state.browserKind);
+    return groups.find((group) => group.name === selectedName)
+      || groups[0] || null;
+  }
+
+  function browserAlbumList() {
+    const group = currentBrowserGroup();
+    return group ? sortedAlbums(group.albums) : [];
+  }
+
+  function updateBrowserAlbumSelection() {
+    $$(".browser-album", el.content).forEach((node) => {
+      node.classList.toggle(
+        "selected",
+        node.dataset.browserAlbumId === state.browserAlbumAnchor
+      );
+    });
+  }
+
+  function selectBrowserAlbum(albumId) {
+    state.browserAlbumAnchor = albumId;
+    updateBrowserAlbumSelection();
+    const node = Array.from(
+      document.querySelectorAll(".browser-album")
+    ).find((item) => item.dataset.browserAlbumId === albumId);
+    if (node) node.scrollIntoView({ block: "nearest" });
+  }
+
+  function selectBrowserAlbumAt(index) {
+    const albums = browserAlbumList();
+    if (!albums.length) return;
+    selectBrowserAlbum(albums[clamp(index, 0, albums.length - 1)].id);
+  }
+
+  function moveBrowserAlbumSelection(delta) {
+    const albums = browserAlbumList();
+    if (!albums.length) return;
+    let index = albums.findIndex(
+      (album) => album.id === state.browserAlbumAnchor
+    );
+    if (index < 0) index = delta > 0 ? 0 : albums.length - 1;
+    else index = clamp(index + delta, 0, albums.length - 1);
+    selectBrowserAlbumAt(index);
+  }
+
+  function playSelectedBrowserAlbum() {
+    const songs = state.browserAlbumAnchor
+      ? (state.songsByAlbum.get(state.browserAlbumAnchor) || []) : [];
+    if (songs.length) playCollection(songs, 0);
+  }
+
+  function browserListPageSize() {
+    const scroller = $("#browser-list-scroll", el.content);
+    return Math.max(
+      1, Math.floor((scroller ? scroller.clientHeight : 400) / 26)
+    );
+  }
+
+  function browserAlbumPageSize() {
+    const pane = $("#browser-pane-scroll", el.content);
+    return Math.max(
+      1, Math.floor((pane ? pane.clientHeight : 400) / 140)
+    );
   }
 
   function playSelectedSongs() {
@@ -5908,6 +6008,12 @@
     if (typing) return;
     if (command || event.altKey) return;
 
+    if (state.albumDetail && event.key === "Backspace") {
+      event.preventDefault();
+      closeAlbumDetail();
+      return;
+    }
+
     if (event.code === "Space" || event.key === " ") {
       event.preventDefault();
       if (!event.repeat) togglePlayPause();
@@ -5932,6 +6038,11 @@
       moveSongSelection(event.key === "ArrowUp" ? -1 : 1);
       return;
     }
+    if (state.albumDetail && event.key === "Enter") {
+      event.preventDefault();
+      playSelectedSongs();
+      return;
+    }
     if (state.section === "songs" || state.section === "starred"
         || ((state.section === "playlist" || state.section === "playlists")
             && !state.albumDetail)) {
@@ -5945,13 +6056,20 @@
         selectSongByIndex(event.key === "Home" ? 0 : state.songRows.length - 1);
         return;
       }
+      if (event.key === "PageUp" || event.key === "PageDown") {
+        event.preventDefault();
+        moveSongSelection(
+          (event.key === "PageDown" ? 1 : -1) * songPageSize()
+        );
+        return;
+      }
       if (event.key === "Enter") {
         event.preventDefault();
         playSelectedSongs();
         return;
       }
     }
-    if (state.section === "albums") {
+    if (state.section === "albums" && !state.albumDetail) {
       if (event.key === "PageUp" || event.key === "PageDown") {
         event.preventDefault();
         goToAlbumPage(state.albumPage + (event.key === "PageDown" ? 1 : -1));
@@ -5979,16 +6097,62 @@
         return;
       }
     }
-    if ((state.section === "artists" || state.section === "genres")
-        && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-      event.preventDefault();
-      moveBrowserSelection(event.key === "ArrowUp" ? -1 : 1);
-      return;
-    }
-    if ((state.section === "artists" || state.section === "genres")
-        && event.key === "Enter") {
-      event.preventDefault();
-      playAllBrowserGroup();
+    if (state.section === "artists" || state.section === "genres") {
+      const paneFocused = state.browserFocus === "pane";
+      if (event.key === "ArrowRight" && !paneFocused) {
+        event.preventDefault();
+        state.browserFocus = "pane";
+        const albums = browserAlbumList();
+        if (state.browserAlbumAnchor) {
+          selectBrowserAlbum(state.browserAlbumAnchor);
+        } else if (albums.length) {
+          selectBrowserAlbum(albums[0].id);
+        }
+        return;
+      }
+      if (event.key === "ArrowLeft" && paneFocused) {
+        event.preventDefault();
+        state.browserFocus = "list";
+        const row = document.querySelector(".browser-row.selected");
+        if (row) row.scrollIntoView({ block: "nearest" });
+        return;
+      }
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        const delta = event.key === "ArrowUp" ? -1 : 1;
+        if (paneFocused) moveBrowserAlbumSelection(delta);
+        else moveBrowserSelection(delta);
+        return;
+      }
+      if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        if (paneFocused) {
+          selectBrowserAlbumAt(
+            event.key === "Home" ? 0 : browserAlbumList().length - 1
+          );
+        } else {
+          selectBrowserGroupAt(
+            event.key === "Home"
+              ? 0 : (state.browserGroups || []).length - 1
+          );
+        }
+        return;
+      }
+      if (event.key === "PageUp" || event.key === "PageDown") {
+        event.preventDefault();
+        const direction = event.key === "PageDown" ? 1 : -1;
+        if (paneFocused) {
+          moveBrowserAlbumSelection(direction * browserAlbumPageSize());
+        } else {
+          moveBrowserSelection(direction * browserListPageSize());
+        }
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (paneFocused) playSelectedBrowserAlbum();
+        else playAllBrowserGroup();
+      }
     }
   }
 

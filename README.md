@@ -574,10 +574,11 @@ the canonical hash route.
 | `8` | Stared |
 | `Space` | Play / pause |
 | `↑` / `↓` | Move the selection in the current list |
-| `←` / `→` | Move within the album grid |
-| `Home` / `End` | Songs list start/end; Albums first/last page |
-| `Page Up` / `Page Down` | Albums previous/next page |
-| `Return` | Play the selection / open an album / play an artist or genre |
+| `←` / `→` | Move within the album grid; in Artists, switch between the artist list and the album pane |
+| `Home` / `End` | First/last song, album page, artist, or album |
+| `Page Up` / `Page Down` | Previous/next page of songs or albums |
+| `Return` | Play the selection / open an album / play an artist or selected album |
+| `Backspace` | Return from album detail to the Albums grid |
 | `Cmd/Ctrl+F` | Focus search |
 | `Escape` | Close menus, overlays, and album detail; clear search |
 
