@@ -32,6 +32,7 @@ DEFAULT_SETTINGS = {
     "host": "127.0.0.1",
     "port": 8765,
     "server_header": "",
+    "trusted_hosts": ["*"],
     "read_only": False,
     "jpeg_quality": 80,
     "cover_size": 500,
@@ -147,6 +148,27 @@ def _as_audio_format_index(value, formats, fallback):
     if fallback in available:
         return fallback
     return formats[0]["index"]
+
+
+def _as_trusted_hosts(value):
+    if value is None:
+        return ["*"]
+    if isinstance(value, str):
+        items = [part.strip() for part in value.split(",")]
+    elif isinstance(value, (list, tuple)):
+        items = [str(part).strip() for part in value]
+    else:
+        raise ValueError("trusted_hosts must be a string or a list")
+    hosts = []
+    for item in items:
+        if not item:
+            continue
+        if any(ord(char) < 32 or ord(char) == 127 for char in item):
+            raise ValueError(
+                "trusted_hosts entries must not contain control characters"
+            )
+        hosts.append(item)
+    return hosts or ["*"]
 
 
 def _read_config(path):
@@ -321,6 +343,12 @@ def load_settings(config_path=None):
             "server_header must be at most 200 characters without "
             "control characters"
         )
+    trusted_hosts = _as_trusted_hosts(
+        os.environ.get(
+            "WEBTRACKS_TRUSTED_HOSTS",
+            values.get("trusted_hosts", DEFAULT_SETTINGS["trusted_hosts"]),
+        )
+    )
     jpeg_quality = _as_quality(
         os.environ.get("WEBTRACKS_JPEG_QUALITY", values.get("jpeg_quality")),
         DEFAULT_SETTINGS["jpeg_quality"],
@@ -468,6 +496,7 @@ def load_settings(config_path=None):
         "host": str(host),
         "port": port,
         "server_header": server_header,
+        "trusted_hosts": trusted_hosts,
         "read_only": read_only,
         "jpeg_quality": jpeg_quality,
         "cover_size": cover_size,

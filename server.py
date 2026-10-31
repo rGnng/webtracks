@@ -25,6 +25,7 @@ import shutil
 import sys
 import threading
 import time
+from urllib.parse import urlsplit
 
 from flask import (
     Flask, Response, current_app, request, send_file, send_from_directory,
@@ -89,7 +90,7 @@ class Config:
                  cover_size=None, music_dirs=None, config_path=None,
                  transcode_cache_mb=None,
                  audio_formats=None, default_audio_format=None,
-                 server_header=None,
+                 server_header=None, trusted_hosts=None,
                  album_sort=None, album_sort_descending=None,
                  admin_password_sha1=None, libraries=None,
                  admin_bruteforce_limit=None,
@@ -169,6 +170,12 @@ class Config:
         ):
             server_header = ""
         self.server_header = server_header
+        hosts = trusted_hosts if trusted_hosts is not None else ["*"]
+        if isinstance(hosts, str):
+            hosts = [hosts]
+        self.trusted_hosts = [
+            str(host).strip() for host in hosts if str(host).strip()
+        ] or ["*"]
         self.album_sort = album_sort or "recentlyAdded"
         self.album_sort_descending = (
             True if album_sort_descending is None
@@ -232,6 +239,7 @@ class Config:
             audio_formats=settings.get("audio_formats"),
             default_audio_format=settings.get("default_audio_format"),
             server_header=settings.get("server_header"),
+            trusted_hosts=settings.get("trusted_hosts"),
             libraries=settings.get("libraries") or [],
             album_sort=settings.get("album_sort"),
             album_sort_descending=settings.get("album_sort_descending"),
@@ -1003,6 +1011,10 @@ def create_app(config):
         static_url_path="/static",
     )
     app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
+    if "*" in config.trusted_hosts:
+        app.config["TRUSTED_HOSTS"] = None
+    else:
+        app.config["TRUSTED_HOSTS"] = list(config.trusted_hosts)
     catalog = LibraryCatalog(config.database, read_only=config.read_only)
     if not config.read_only and config.libraries:
         _seed_library_paths(config, catalog.db)
@@ -1048,12 +1060,35 @@ def create_app(config):
             return None
         return _error("Admin login required", 401)
 
+    @app.before_request
+    def validate_origin():
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        fetch_site = (
+            request.headers.get("Sec-Fetch-Site") or ""
+        ).strip().lower()
+        if fetch_site and fetch_site not in ("same-origin", "none"):
+            return _error("Cross-origin request rejected", 403)
+        origin = (request.headers.get("Origin") or "").strip()
+        if not origin:
+            return None
+        parsed = urlsplit(origin)
+        if not parsed.scheme or not parsed.netloc:
+            return _error("Cross-origin request rejected", 403)
+        if parsed.netloc.lower() != (request.host or "").lower():
+            return _error("Cross-origin request rejected", 403)
+        return None
+
     @app.after_request
     def security_headers(response):
         if config.server_header:
             response.headers["Server"] = config.server_header
         elif "Server" in response.headers:
             del response.headers["Server"]
+        if request.path.startswith(("/api/audio/", "/api/artwork/")):
+            response.headers.setdefault(
+                "Cross-Origin-Resource-Policy", "same-origin"
+            )
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data:; media-src 'self'; "
@@ -2029,6 +2064,7 @@ def main(argv=None):
         audio_formats=settings["audio_formats"],
         default_audio_format=settings["default_audio_format"],
         server_header=settings["server_header"],
+        trusted_hosts=settings["trusted_hosts"],
         album_sort=settings["album_sort"],
         album_sort_descending=settings["album_sort_descending"],
         admin_password_sha1=settings["admin_password_sha1"],

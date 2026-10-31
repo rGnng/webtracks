@@ -554,6 +554,67 @@ class ApiTests(unittest.TestCase):
         response = app.test_client().get("/api/health")
         self.assertEqual(response.headers["Server"], "WebTracks")
 
+    def test_media_responses_use_cross_origin_resource_policy(self):
+        artwork = self.client.get("/api/artwork/" + self.album_id)
+        self.assertEqual(
+            artwork.headers["Cross-Origin-Resource-Policy"], "same-origin"
+        )
+        audio = self.client.head(
+            "/api/audio/%s?quality=raw" % self.song_id
+        )
+        self.assertEqual(
+            audio.headers["Cross-Origin-Resource-Policy"], "same-origin"
+        )
+        audio.close()
+
+    def test_state_changing_requests_validate_origin(self):
+        self.assertEqual(
+            self.client.post(
+                "/api/status", headers={"Origin": "https://evil.example"}
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/status", headers={"Sec-Fetch-Site": "cross-site"}
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/status", headers={"Origin": "http://localhost"}
+            ).status_code,
+            200,
+        )
+
+    def test_trusted_hosts_default_and_override(self):
+        self.assertEqual(
+            self.client.get(
+                "/api/health", headers={"Host": "evil.example"}
+            ).status_code,
+            200,
+        )
+        app = create_app(
+            Config(
+                self.db_path,
+                self.artwork,
+                trusted_hosts=["music.example.com"],
+            )
+        )
+        client = app.test_client()
+        self.assertEqual(
+            client.get(
+                "/api/health", headers={"Host": "music.example.com"}
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            client.get(
+                "/api/health", headers={"Host": "evil.example"}
+            ).status_code,
+            400,
+        )
+
     def test_reload_endpoint_is_removed(self):
         self.assertEqual(
             self.client.post("/api/reload").status_code, 404
@@ -1603,16 +1664,27 @@ class ConfigTests(unittest.TestCase):
             with self._clean_env():
                 settings = load_settings(path)
             self.assertEqual(settings["server_header"], "")
+            self.assertEqual(settings["trusted_hosts"], ["*"])
 
             with open(path, "w", encoding="utf-8") as handle:
-                json.dump({"server_header": "WebTracks"}, handle)
+                json.dump({
+                    "server_header": "WebTracks",
+                    "trusted_hosts": ["music.example.com"],
+                }, handle)
             with self._clean_env():
                 settings = load_settings(path)
             self.assertEqual(settings["server_header"], "WebTracks")
+            self.assertEqual(
+                settings["trusted_hosts"], ["music.example.com"]
+            )
             with self._clean_env():
                 os.environ["WEBTRACKS_SERVER_HEADER"] = "Hidden"
+                os.environ["WEBTRACKS_TRUSTED_HOSTS"] = "a.example,b.example"
                 settings = load_settings(path)
             self.assertEqual(settings["server_header"], "Hidden")
+            self.assertEqual(
+                settings["trusted_hosts"], ["a.example", "b.example"]
+            )
 
     def test_audio_formats_default_and_override(self):
         with tempfile.TemporaryDirectory() as root:

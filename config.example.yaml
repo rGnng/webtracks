@@ -18,6 +18,11 @@ port: 8765
 # Value of the HTTP Server response header. Empty hides the header.
 server_header: ""
 
+# Host header allowlist. "*" allows any Host; set exact hostnames when the
+# service is exposed through a proxy to reduce DNS rebinding risk.
+trusted_hosts:
+  - "*"
+
 # Refuse all database writes: stars, play counts, playlists, scans, and ReKey.
 read_only: false
 
