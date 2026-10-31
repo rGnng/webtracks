@@ -2326,7 +2326,7 @@ button:disabled {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   height: 24px;
   padding: 0 9px;
   border-radius: 4px;
@@ -2351,6 +2351,7 @@ button:disabled {
 }
 
 .menu-item .menu-icon {
+  order: 1;
   width: 13px;
   height: 13px;
   display: inline-flex;
@@ -2364,6 +2365,7 @@ button:disabled {
 }
 
 .menu-item .menu-label {
+  order: 2;
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -2371,6 +2373,8 @@ button:disabled {
 }
 
 .menu-item .menu-check {
+  order: 3;
+  margin-left: auto;
   width: 12px;
   display: inline-flex;
   justify-content: center;
