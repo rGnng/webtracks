@@ -33,9 +33,12 @@ album_sort_descending: true
 # default for the password "1". Change it from Setup -> Settings.
 admin_password_sha1: "356a192b7913b04c54574d18c28d46e6395428ab"
 
-# Runtime logs: runtime.log and operations.log.
+# Runtime and operation logs: runtime.log and operations.log.
+# log_format: text writes human-readable lines; json writes one JSON object
+# per line.
 logs_dir: logs
 log_level: INFO
+log_format: text
 
 # How album, song, and playlist links are displayed: uuid or base64url.
 url_id_format: uuid

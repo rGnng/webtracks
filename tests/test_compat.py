@@ -785,7 +785,9 @@ class ApiTests(unittest.TestCase):
                     "database_dir": "data",
                     "libraries": [{"path": self.music}],
                 }, handle)
-            runtime, operations = configure_logging(logs_dir, "INFO")
+            runtime, operations = configure_logging(
+                logs_dir, "INFO", "json"
+            )
             try:
                 app = create_app(
                     Config(
@@ -874,34 +876,90 @@ class ApiTests(unittest.TestCase):
 
 
 class LoggingTests(unittest.TestCase):
-    def test_logs_are_written_and_archives_compress(self):
-        import logging
+    @staticmethod
+    def _close_loggers(loggers):
+        for logger in loggers:
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+                handler.close()
+
+    def test_text_logs_and_archive_rotation(self):
         import gzip
 
         with tempfile.TemporaryDirectory() as root:
             runtime, operations = configure_logging(root, "INFO")
-            runtime.info("runtime test message")
-            operations.info('{"action":"test"}')
-            for logger in (runtime, operations):
-                for handler in logger.handlers:
-                    handler.flush()
-            runtime_path = os.path.join(root, "runtime.log")
-            operations_path = os.path.join(root, "operations.log")
-            with open(runtime_path, encoding="utf-8") as handle:
-                self.assertIn("runtime test message", handle.read())
-            with open(operations_path, encoding="utf-8") as handle:
-                self.assertIn('"action":"test"', handle.read())
-            archive = os.path.join(root, "runtime.log.2026-01-01")
-            with open(archive, "w", encoding="utf-8") as handle:
-                handle.write("old log\n")
-            _compress_archive(archive)
-            self.assertFalse(os.path.exists(archive))
-            with gzip.open(archive + ".gz", "rt", encoding="utf-8") as handle:
-                self.assertEqual(handle.read(), "old log\n")
-            for logger in (runtime, operations):
-                for handler in list(logger.handlers):
-                    logger.removeHandler(handler)
-                    handler.close()
+            try:
+                event = {
+                    "time": "2026-01-01T12:00:00+00:00",
+                    "action": "test",
+                    "result": "success",
+                    "remoteIp": "127.0.0.1",
+                }
+                runtime.info("runtime test message")
+                operations.info("operation", extra={"event": event})
+                for logger in (runtime, operations):
+                    for handler in logger.handlers:
+                        handler.flush()
+                runtime_path = os.path.join(root, "runtime.log")
+                operations_path = os.path.join(root, "operations.log")
+                with open(runtime_path, encoding="utf-8") as handle:
+                    runtime_text = handle.read()
+                with open(operations_path, encoding="utf-8") as handle:
+                    operations_text = handle.read()
+                self.assertIn("INFO runtime test message", runtime_text)
+                self.assertIn(
+                    "action=test result=success remoteIp=127.0.0.1",
+                    operations_text,
+                )
+                self.assertNotIn('"action":"test"', operations_text)
+                archive = os.path.join(root, "runtime.log.2026-01-01")
+                with open(archive, "w", encoding="utf-8") as handle:
+                    handle.write("old log\n")
+                _compress_archive(archive)
+                self.assertFalse(os.path.exists(archive))
+                with gzip.open(
+                    archive + ".gz", "rt", encoding="utf-8"
+                ) as handle:
+                    self.assertEqual(handle.read(), "old log\n")
+            finally:
+                self._close_loggers((runtime, operations))
+
+    def test_json_logs(self):
+        with tempfile.TemporaryDirectory() as root:
+            runtime, operations = configure_logging(root, "INFO", "json")
+            try:
+                event = {
+                    "time": "2026-01-01T12:00:00+00:00",
+                    "action": "test",
+                    "result": "success",
+                    "remoteIp": "127.0.0.1",
+                }
+                runtime.info("runtime test message")
+                operations.info("operation", extra={"event": event})
+                for logger in (runtime, operations):
+                    for handler in logger.handlers:
+                        handler.flush()
+                with open(
+                    os.path.join(root, "runtime.log"),
+                    encoding="utf-8",
+                ) as handle:
+                    runtime_record = json.loads(handle.readline())
+                with open(
+                    os.path.join(root, "operations.log"),
+                    encoding="utf-8",
+                ) as handle:
+                    operation_record = json.loads(handle.readline())
+                self.assertEqual(runtime_record["level"], "INFO")
+                self.assertEqual(
+                    runtime_record["message"], "runtime test message"
+                )
+                self.assertIn("time", runtime_record)
+                self.assertEqual(operation_record["action"], "test")
+                self.assertEqual(
+                    operation_record["remoteIp"], "127.0.0.1"
+                )
+            finally:
+                self._close_loggers((runtime, operations))
 
 
 class ConfigTests(unittest.TestCase):
@@ -1059,6 +1117,25 @@ class ConfigTests(unittest.TestCase):
                 raw = yaml.safe_load(handle)
             self.assertEqual(raw["libraries"], [{"path": music}])
             self.assertEqual(raw["log_level"], "debug")
+
+    def test_log_format_defaults_and_env_override(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.yaml")
+            with open(path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({"database_dir": "var"}, handle)
+            with self._clean_env():
+                self.assertEqual(load_settings(path)["log_format"], "text")
+                os.environ["WEBTRACKS_LOG_FORMAT"] = "json"
+                self.assertEqual(load_settings(path)["log_format"], "json")
+                os.environ["WEBTRACKS_LOG_FORMAT"] = "invalid"
+                self.assertEqual(load_settings(path)["log_format"], "text")
+            with open(path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({
+                    "database_dir": "var",
+                    "log_format": "JSON",
+                }, handle)
+            with self._clean_env():
+                self.assertEqual(load_settings(path)["log_format"], "json")
 
     def test_example_config_is_complete_and_not_ignored(self):
         example = os.path.join(ROOT, "config.example.yaml")

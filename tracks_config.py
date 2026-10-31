@@ -37,6 +37,7 @@ DEFAULT_SETTINGS = {
     "admin_password_sha1": DEFAULT_ADMIN_PASSWORD_SHA1,
     "logs_dir": "logs",
     "log_level": "INFO",
+    "log_format": "text",
     "url_id_format": "uuid",
 }
 
@@ -305,6 +306,14 @@ def load_settings(config_path=None):
     ).strip().upper()
     if log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
         log_level = DEFAULT_SETTINGS["log_level"]
+    log_format = str(
+        os.environ.get(
+            "WEBTRACKS_LOG_FORMAT",
+            values.get("log_format") or DEFAULT_SETTINGS["log_format"],
+        )
+    ).strip().lower()
+    if log_format not in ("text", "json"):
+        log_format = DEFAULT_SETTINGS["log_format"]
     url_id_format = str(
         os.environ.get(
             "WEBTRACKS_URL_ID_FORMAT",
@@ -335,5 +344,6 @@ def load_settings(config_path=None):
         "admin_password_sha1": admin_password_sha1,
         "logs_dir": logs_dir,
         "log_level": log_level,
+        "log_format": log_format,
         "url_id_format": url_id_format,
     }

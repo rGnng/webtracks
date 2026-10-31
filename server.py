@@ -78,7 +78,8 @@ class Config:
                  music_dirs=None, config_path=None, transcode_cache_mb=None,
                  album_sort=None, album_sort_descending=None,
                  admin_password_sha1=None, libraries=None,
-                 logs_dir=None, log_level=None, url_id_format=None):
+                 logs_dir=None, log_level=None, log_format=None,
+                 url_id_format=None):
         self.database = os.path.abspath(os.path.expanduser(database))
         self.artwork = os.path.abspath(os.path.expanduser(artwork))
         self.read_only = bool(read_only)
@@ -118,6 +119,9 @@ class Config:
             if logs_dir else None
         )
         self.log_level = str(log_level or "INFO").upper()
+        self.log_format = str(log_format or "text").strip().lower()
+        if self.log_format not in ("text", "json"):
+            self.log_format = "text"
         self.url_id_format = (
             str(url_id_format or "uuid").strip().lower()
         )
@@ -140,6 +144,7 @@ class Config:
             admin_password_sha1=settings.get("admin_password_sha1"),
             logs_dir=settings.get("logs_dir"),
             log_level=settings.get("log_level"),
+            log_format=settings.get("log_format"),
             url_id_format=settings.get("url_id_format"),
         )
 
@@ -564,9 +569,7 @@ def _log_operation(action, result="ok", **details):
         "path": request.path,
     }
     payload.update(details)
-    operation_log.info(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    )
+    operation_log.info("operation", extra={"event": payload})
 
 
 def _byte_range_response(data, mimetype, etag):
@@ -1437,6 +1440,7 @@ def main(argv=None):
         admin_password_sha1=settings["admin_password_sha1"],
         logs_dir=settings["logs_dir"],
         log_level=settings["log_level"],
+        log_format=settings["log_format"],
         url_id_format=settings["url_id_format"],
     )
     host = args.host or settings["host"]
@@ -1524,7 +1528,9 @@ def main(argv=None):
             file=sys.stderr,
         )
     if config.logs_dir:
-        configure_logging(config.logs_dir, config.log_level)
+        configure_logging(
+            config.logs_dir, config.log_level, config.log_format
+        )
         runtime_log.info(
             "WebTracks starting; config=%s database=%s artwork=%s logs=%s",
             config.config_path, config.database, config.artwork,
@@ -1552,7 +1558,9 @@ def main(argv=None):
     ))
     print("  transcode cache: %d MiB (memory)" % config.transcode_cache_mb)
     if config.logs_dir:
-        print("  logs:     %s (%s)" % (config.logs_dir, config.log_level))
+        print("  logs:     %s (%s, %s)" % (
+            config.logs_dir, config.log_level, config.log_format
+        ))
     print("  listening: http://%s:%d" % (host, port))
     app.run(
         host=host,

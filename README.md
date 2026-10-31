@@ -120,6 +120,7 @@ the built-in defaults on first run.
 | `admin_password_sha1` | SHA-1 of the Setup admin password (40 hex characters). Prefer changing it from **Setup → Settings**. The development default is the single digit `1`, which hashes to `356a192b7913b04c54574d18c28d46e6395428ab`. |
 | `logs_dir` | Directory for `runtime.log` and `operations.log`; default `logs`, relative to `config.yaml`. |
 | `log_level` | Runtime log threshold (`DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`); default `INFO`. The operation log always records at `INFO`. |
+| `log_format` | Format for both log files: `text` (default) or `json`. Text uses timestamped human-readable lines; JSON writes one object per line. |
 | `url_id_format` | How album, song, and playlist links are displayed: `uuid` or `base64url`; default `uuid`. Can also be changed from **Setup → Settings**. |
 
 Library IDs and namespaces are **not** configuration values. They live in the
@@ -290,10 +291,15 @@ Two log files are written under `logs_dir`:
 
 - `runtime.log` records startup, scan, ReKey, and server errors. Its threshold is
   `log_level` (default `INFO`).
-- `operations.log` is JSONL. Each entry includes a local timestamp, action,
-  result, source IP, `X-Forwarded-For`, user agent, HTTP method, path, and
-  action-specific details. It covers admin login/logout, password and URL-format
-  changes, library ID changes, scans, ReKey, and playlist changes.
+- `operations.log` records admin and library operations. Each entry includes a
+  local timestamp, action, result, source IP, `X-Forwarded-For`, user agent,
+  HTTP method, path, and action-specific details. It covers admin login/logout,
+  password and URL-format changes, library ID changes, scans, ReKey, and
+  playlist changes.
+
+Both logs use `log_format`: `text` (default) writes timestamped key=value lines,
+while `json` writes one JSON object per line. Set it in `config.yaml` or with
+`WEBTRACKS_LOG_FORMAT`.
 
 Both files rotate at local midnight. The previous day's file is gzip-compressed
 (for example `operations.log.2026-10-30.gz`), and old archives are pruned after
