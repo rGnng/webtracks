@@ -114,7 +114,8 @@
   function init() {
     [
       "app", "toolbar", "section-tabs", "content", "statusbar",
-      "status-text", "status-cache", "status-playing", "setup-button",
+      "status-text", "status-cache", "status-playing", "status-system",
+      "status-online", "status-online-count", "setup-button",
       "prev-button", "play-button", "play-icon",
       "next-button", "quality-button", "lcd", "lcd-idle", "lcd-playing",
       "lcd-art", "lcd-art-wrap", "lcd-title", "lcd-subtitle",
@@ -140,9 +141,11 @@
     bindEvents();
     applyAudioQualityUI();
     refreshCacheStatus(true);
+    refreshSystemStatus(true);
     setInterval(() => {
       if (!document.hidden) refreshCacheStatus();
     }, 10000);
+    setInterval(refreshSystemStatus, 5000);
     renderPlayerUI();
     loadInitial().then(async () => {
       await refreshAdminState();
@@ -780,6 +783,66 @@
       + `&v=${version}`;
   }
 
+  const CLIENT_ID_KEY = "tracksWeb.clientId.v1";
+
+  function presenceClientId() {
+    try {
+      let value = localStorage.getItem(CLIENT_ID_KEY);
+      if (!value) {
+        value = (window.crypto && window.crypto.randomUUID)
+          ? window.crypto.randomUUID()
+          : `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        localStorage.setItem(CLIENT_ID_KEY, value);
+      }
+      return value;
+    } catch (_) {
+      return `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+  }
+
+  async function refreshSystemStatus() {
+    try {
+      const info = await api("/api/status", {
+        method: "POST",
+        body: JSON.stringify({ client: presenceClientId() }),
+      });
+      if (!info) return;
+      const online = Math.max(0, Number(info.online) || 0);
+      if (el.statusOnlineCount) {
+        el.statusOnlineCount.textContent = online.toLocaleString();
+      }
+      if (el.statusOnline) {
+        el.statusOnline.title = `${online} online`;
+      }
+      if (!el.statusSystem) return;
+      const state = info.state || "ready";
+      let label = "Ready";
+      if (state === "scanning") {
+        const total = Number(info.total) || 0;
+        const completed = Number(info.completed) || 0;
+        const percent = total > 0
+          ? ` ${Math.min(100, Math.round(completed / total * 100))}%` : "";
+        label = `Scanning · ${info.phase || "Working"}${percent}`;
+      } else if (state === "rekeying") {
+        label = `ReKeying · ${info.phase || "Working"}`;
+      }
+      el.statusSystem.textContent = label;
+      el.statusSystem.classList.toggle("active", state !== "ready");
+      const details = [];
+      if (info.phase) details.push(info.phase);
+      if (Number(info.total) > 0) {
+        details.push(
+          `${Number(info.completed).toLocaleString()} / ${Number(info.total).toLocaleString()}`
+        );
+      }
+      if (info.message) details.push(info.message);
+      el.statusSystem.title = details.length
+        ? details.join(" · ") : "System status";
+    } catch (_) {
+      if (el.statusSystem) el.statusSystem.title = "System status unavailable";
+    }
+  }
+
   const cacheStatus = { inFlight: false, lastFetchedAt: 0 };
 
   async function refreshCacheStatus(force = false) {
@@ -811,7 +874,7 @@
       return;
     }
     el.statusCache.textContent =
-      `Cache ${fmtCacheSize(used)} / ${fmtCacheSize(max)} · ${entries} ${trackLabel}`;
+      `Server Cache ${fmtCacheSize(used)} / ${fmtCacheSize(max)} · ${entries} ${trackLabel}`;
     const breakdown = (cache.qualities || [])
       .filter((quality) => Number(quality.entries) > 0)
       .map((quality) => {
@@ -1982,7 +2045,7 @@
     const isCurrent = currentSong() && currentSong().id === song.id;
     const track = trackLabel(song, options.multiDisc);
     const status = isCurrent
-      ? icon(player.playing ? "pause" : "play")
+      ? icon(player.playing ? "play" : "pause")
       : esc(track);
     const inlineArtist = song.artist && song.artist !== options.albumArtist
       ? `<span class="track-artist-inline">${esc(song.artist)}</span>` : "";
@@ -2301,7 +2364,7 @@
       selected && next ? "joined-bottom" : "",
     ].filter(Boolean).join(" ");
     const isCurrent = currentSong() && currentSong().id === song.id;
-    const status = isCurrent ? icon(player.playing ? "pause" : "play") : "";
+    const status = isCurrent ? icon(player.playing ? "play" : "pause") : "";
     const sequenceCell = context.kind === "playlist"
       ? `<div class="cell num">${esc(song.addSequence == null ? "—" : song.addSequence)}</div>`
       : "";
@@ -2601,7 +2664,7 @@
         const next = index + 1 < songs.length && state.selectedSongs.has(songs[index + 1].id);
         const isCurrent = currentSong() && currentSong().id === song.id;
         const status = isCurrent
-          ? icon(player.playing ? "pause" : "play")
+          ? icon(player.playing ? "play" : "pause")
           : esc(trackLabel(song, false));
         return `
           <div class="browser-song-row${selected ? " selected" : ""}${selected && previous ? " joined-top" : ""}${selected && next ? " joined-bottom" : ""}"
@@ -2651,7 +2714,7 @@
       const current = song && cell.dataset.statusSong === song.id;
       const original = cell.dataset.original || "";
       if (current) {
-        cell.innerHTML = icon(player.playing ? "pause" : "play");
+        cell.innerHTML = icon(player.playing ? "play" : "pause");
       } else if (cell.innerHTML.indexOf("<svg") === 0) {
         cell.textContent = original;
       }
@@ -3946,8 +4009,10 @@
       <div class="setup-library">
         <div class="setup-library-name">${esc(library.name || library.path)}</div>
         <div class="setup-library-path">${esc(library.path || "")}</div>
-        ${library.identifier
-          ? `<div class="setup-library-namespace">${esc(library.identifier)}</div>` : ""}
+        <div class="setup-library-namespace">
+          identifier: ${esc(library.identifier || "—")}
+          · namespace: ${esc(library.namespace || "—")}
+        </div>
       </div>`).join("")}</div>`;
   }
 
@@ -4129,6 +4194,7 @@
       state.scanJob = data.job;
       state.scanRefreshed = false;
       renderScanProgress(data.job);
+      refreshSystemStatus();
       scheduleScanPoll();
     } catch (error) {
       if (error.status === 401) {
@@ -4188,6 +4254,7 @@
       });
       state.rekeyJob = data.job;
       renderRekeyProgress(data.job);
+      refreshSystemStatus();
       scheduleRekeyPoll();
     } catch (error) {
       if (error.status === 401) {
@@ -4279,6 +4346,7 @@
       if (state.setupOpen && state.modalMode === "setup") {
         renderScanProgress(job);
       }
+      refreshSystemStatus();
       if (job.running) {
         scheduleScanPoll();
         return;
@@ -4370,6 +4438,7 @@
       if (state.setupOpen && state.modalMode === "setup") {
         renderRekeyProgress(job);
       }
+      refreshSystemStatus();
       if (job.running) scheduleRekeyPoll();
     } catch (error) {
       toast(`ReKey status unavailable: ${error.message}`, { error: true });
@@ -4859,10 +4928,9 @@
     if (typing) return;
     if (command || event.altKey) return;
 
-    if (event.code === "Space") {
-      if (target.closest && target.closest("button, [role='slider']")) return;
+    if (event.code === "Space" || event.key === " ") {
       event.preventDefault();
-      togglePlayPause();
+      if (!event.repeat) togglePlayPause();
       return;
     }
     if (["1", "2", "3", "4"].includes(event.key)) {

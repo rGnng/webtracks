@@ -15,6 +15,8 @@ import hashlib
 import json
 import os
 
+from tracks_identity import normalize_identifier
+
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(PROJECT_DIR, "config.json")
 DATABASE_FILENAME = "library.sqlite"
@@ -24,7 +26,7 @@ DEFAULT_ADMIN_PASSWORD_SHA1 = hashlib.sha1(b"1").hexdigest()
 
 DEFAULT_SETTINGS = {
     "database_dir": "data",
-    "music_dirs": [],
+    "libraries": [],
     "host": "127.0.0.1",
     "port": 8765,
     "read_only": False,
@@ -113,6 +115,35 @@ def ensure_config_file(path=None):
     return path
 
 
+def save_libraries_to_config(config_path, libraries):
+    """Write canonical library entries back to config.json atomically."""
+
+    config_path = os.path.abspath(os.path.expanduser(config_path))
+    values = _read_config(config_path)
+    serialized = []
+    for library in libraries or []:
+        identifier = str(library.get("identifier") or "").strip()
+        namespace = normalize_identifier(library.get("namespace") or "")
+        path = os.path.realpath(os.path.expanduser(library.get("path") or ""))
+        if not identifier or not namespace or not path:
+            raise ValueError("Library entries need identifier, namespace and path")
+        serialized.append({
+            "identifier": identifier,
+            "namespace": namespace,
+            "path": path,
+        })
+    values["libraries"] = serialized
+    values.pop("music_dirs", None)
+    parent = os.path.dirname(config_path) or PROJECT_DIR
+    os.makedirs(parent, exist_ok=True)
+    temporary = config_path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(values, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+    os.replace(temporary, config_path)
+    return config_path
+
+
 def load_settings(config_path=None):
     """Load ``config.json`` plus environment overrides.
 
@@ -125,22 +156,112 @@ def load_settings(config_path=None):
         "WEBTRACKS_CONFIG", DEFAULT_CONFIG_PATH
     )
     config_path = os.path.abspath(os.path.expanduser(config_path))
+    raw_values = _read_config(config_path)
     values = dict(DEFAULT_SETTINGS)
-    values.update(_read_config(config_path))
+    values.update(raw_values)
     base = os.path.dirname(config_path) or PROJECT_DIR
 
     database_dir = _expand(
         values.get("database_dir") or DEFAULT_SETTINGS["database_dir"], base
     )
 
-    raw_music_dirs = values.get("music_dirs") or []
-    if isinstance(raw_music_dirs, str):
-        raw_music_dirs = [raw_music_dirs]
-    if not isinstance(raw_music_dirs, list):
-        raise ValueError("%s: music_dirs must be a list" % config_path)
-    music_dirs = [
-        _expand(item, base) for item in raw_music_dirs if str(item).strip()
-    ]
+    if "libraries" in raw_values:
+        raw_libraries = raw_values.get("libraries") or []
+    else:
+        # Backward compatibility for configs that only had music_dirs.
+        raw_music_dirs = raw_values.get("music_dirs") or []
+        if isinstance(raw_music_dirs, str):
+            raw_music_dirs = [raw_music_dirs]
+        if not isinstance(raw_music_dirs, list):
+            raise ValueError("%s: music_dirs must be a list" % config_path)
+        raw_libraries = [
+            {"path": path} for path in raw_music_dirs
+            if str(path).strip()
+        ]
+    if not isinstance(raw_libraries, list):
+        raise ValueError("%s: libraries must be a list" % config_path)
+
+    libraries = []
+    seen_paths = set()
+    seen_identifiers = set()
+    seen_namespaces = set()
+    for index, item in enumerate(raw_libraries):
+        if not isinstance(item, dict):
+            raise ValueError(
+                "%s: libraries[%d] must be an object" % (config_path, index)
+            )
+        raw_path = item.get("path") or item.get("root")
+        if not str(raw_path or "").strip():
+            raise ValueError(
+                "%s: libraries[%d].path is required" % (config_path, index)
+            )
+        path = os.path.realpath(_expand(raw_path, base))
+        if path in seen_paths:
+            raise ValueError("%s: duplicate library path %s" % (
+                config_path, path
+            ))
+        seen_paths.add(path)
+
+        identifier = item.get("identifier")
+        if identifier is None:
+            identifier = item.get("id")
+        identifier = str(identifier).strip() if identifier is not None else None
+        if identifier == "":
+            identifier = None
+        if identifier is not None:
+            if any(ord(char) < 32 for char in identifier):
+                raise ValueError(
+                    "%s: library identifier contains control characters"
+                    % config_path
+                )
+            key = normalize_identifier(identifier)
+            if key in seen_identifiers:
+                raise ValueError(
+                    "%s: duplicate library identifier %s"
+                    % (config_path, identifier)
+                )
+            seen_identifiers.add(key)
+
+        namespace = item.get("namespace")
+        namespace = (
+            normalize_identifier(namespace) if namespace is not None else None
+        )
+        if namespace == "":
+            namespace = None
+        if namespace is not None:
+            if any(ord(char) < 32 for char in namespace):
+                raise ValueError(
+                    "%s: library namespace contains control characters"
+                    % config_path
+                )
+            if namespace in seen_namespaces:
+                raise ValueError(
+                    "%s: duplicate library namespace %s"
+                    % (config_path, namespace)
+                )
+            seen_namespaces.add(namespace)
+
+        libraries.append({
+            "identifier": identifier,
+            "namespace": namespace,
+            "path": path,
+        })
+
+    seen_keys = {}
+    for library in libraries:
+        for key in (library["identifier"], library["namespace"]):
+            if key is None:
+                continue
+            normalized = normalize_identifier(key)
+            owner = seen_keys.get(normalized)
+            if owner is not None and owner != library["path"]:
+                raise ValueError(
+                    "%s: library identifier/namespace %s is already in use"
+                    % (config_path, key)
+                )
+            seen_keys[normalized] = library["path"]
+
+    music_dirs = [library["path"] for library in libraries]
 
     database_dir = os.environ.get("WEBTRACKS_DATABASE_DIR", database_dir)
     database_dir = os.path.abspath(os.path.expanduser(database_dir))
@@ -209,6 +330,7 @@ def load_settings(config_path=None):
         "database_dir": os.path.abspath(os.path.expanduser(database_dir)),
         "database": os.path.abspath(os.path.expanduser(database)),
         "artwork": os.path.abspath(os.path.expanduser(artwork)),
+        "libraries": libraries,
         "music_dirs": music_dirs,
         "host": str(host),
         "port": port,

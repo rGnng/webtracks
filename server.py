@@ -37,6 +37,7 @@ from tracks_config import (
     DEFAULT_CONFIG_PATH,
     ensure_config_file,
     load_settings,
+    save_libraries_to_config,
 )
 from tracks_db import (
     LibraryCatalog,
@@ -69,7 +70,7 @@ class Config:
     def __init__(self, database, artwork, read_only=False, jpeg_quality=None,
                  music_dirs=None, config_path=None, transcode_cache_mb=None,
                  album_sort=None, album_sort_descending=None,
-                 admin_password_sha1=None):
+                 admin_password_sha1=None, libraries=None):
         self.database = os.path.abspath(os.path.expanduser(database))
         self.artwork = os.path.abspath(os.path.expanduser(artwork))
         self.read_only = bool(read_only)
@@ -77,10 +78,18 @@ class Config:
             jpeg_quality or DEFAULT_JPEG_QUALITY
         )
         self.jpeg_quality = max(15, min(100, self.jpeg_quality))
-        self.music_dirs = [
-            os.path.abspath(os.path.expanduser(path))
-            for path in (music_dirs or [])
-        ]
+        if libraries is None:
+            libraries = [
+                {"path": path} for path in (music_dirs or [])
+            ]
+        self.libraries = []
+        for library in libraries:
+            self.libraries.append({
+                "identifier": library.get("identifier"),
+                "namespace": library.get("namespace"),
+                "path": os.path.realpath(os.path.expanduser(library["path"])),
+            })
+        self.music_dirs = [library["path"] for library in self.libraries]
         self.config_path = config_path
         try:
             self.transcode_cache_mb = max(0, int(
@@ -108,10 +117,35 @@ class Config:
             music_dirs=settings.get("music_dirs") or [],
             config_path=settings.get("config_path"),
             transcode_cache_mb=settings.get("transcode_cache_mb"),
+            libraries=settings.get("libraries") or [],
             album_sort=settings.get("album_sort"),
             album_sort_descending=settings.get("album_sort_descending"),
             admin_password_sha1=settings.get("admin_password_sha1"),
         )
+
+
+class PresenceTracker:
+    """Approximate count of open web clients using a heartbeat TTL."""
+
+    def __init__(self, ttl=30):
+        self.ttl = max(5, int(ttl))
+        self._clients = {}
+        self._lock = threading.Lock()
+
+    def touch(self, client_id=None):
+        now = time.time()
+        with self._lock:
+            self._clients = {
+                key: seen for key, seen in self._clients.items()
+                if now - seen <= self.ttl
+            }
+            client_id = str(client_id or "").strip()[:128]
+            if client_id:
+                self._clients[client_id] = now
+            return len(self._clients)
+
+    def count(self):
+        return self.touch(None)
 
 
 class AdminAuth:
@@ -160,25 +194,29 @@ class AdminAuth:
 
 
 def _configured_scan_roots(config, db=None):
-    """Return only libraries explicitly listed in config.music_dirs."""
+    """Return only libraries explicitly listed in config.libraries."""
 
-    if not config.music_dirs:
+    libraries = config.libraries or []
+    if not libraries:
         return []
     if db is None:
         db = LibraryDB(config.database, read_only=True)
-    libraries = db.load_libraries()
-    by_path = {
-        canonical_path(library["path"]): library for library in libraries
+    stored = {
+        canonical_path(library["path"]): library
+        for library in db.load_libraries()
     }
     roots = []
-    for configured_path in config.music_dirs:
-        root = canonical_path(configured_path)
-        library = by_path.get(root)
+    for configured in libraries:
+        root = canonical_path(configured["path"])
+        library = stored.get(root) or {}
         roots.append({
             "root": root,
             "path": root,
-            "name": (library or {}).get("name") or os.path.basename(root),
-            "identifier": (library or {}).get("identifier"),
+            "name": library.get("name") or os.path.basename(root),
+            "identifier": (configured.get("identifier")
+                           or library.get("identifier")),
+            "namespace": (configured.get("namespace")
+                          or library.get("id_namespace")),
         })
     return roots
 
@@ -259,6 +297,8 @@ class ScanManager:
             }
 
         db = LibraryDB(self.config.database, read_only=False)
+        if self.config.libraries:
+            db.sync_libraries(self.config.libraries)
         mode = payload.get("mode") or "quick"
         if mode not in ("quick", "full"):
             mode = "quick"
@@ -269,10 +309,10 @@ class ScanManager:
             with self.lock:
                 self.job["running"] = False
                 self.job["phase"] = "Error"
-                self.job["message"] = "No music folders configured"
+                self.job["message"] = "No libraries configured"
             raise ValueError(
-                "No music folders are configured. Add them to "
-                "music_dirs in config.json."
+                "No libraries are configured. Add them to "
+                "libraries in config.json."
             )
 
         def run():
@@ -386,11 +426,52 @@ class RekeyManager:
         summary = None
         try:
             db = LibraryDB(self.config.database, read_only=False)
+            synced = db.sync_libraries(self.config.libraries)
+            stored_by_path = {
+                canonical_path(library["path"]): library
+                for library in synced
+            }
+            identifiers_by_path = {}
+            config_entries = []
+            for library in self.config.libraries:
+                path = canonical_path(library["path"])
+                stored = stored_by_path.get(path, {})
+                identifier = library.get("identifier") or stored.get("identifier")
+                if identifier is None:
+                    raise ValueError(
+                        "Library identifier is missing: %s" % path
+                    )
+                identifiers_by_path[path] = identifier
+                config_entries.append({
+                    "identifier": identifier,
+                    "namespace": (library.get("namespace")
+                                  or stored.get("id_namespace")),
+                    "path": path,
+                })
             self._update(
                 phase="Rekeying database",
                 message="Recalculating song, album, and artist IDs",
             )
-            result = db.rekey_libraries()
+            result = db.rekey_libraries(identifiers_by_path)
+            namespaces = result.get("namespaceByPath") or {}
+            updated_entries = []
+            for entry in config_entries:
+                updated_entries.append({
+                    "identifier": entry["identifier"],
+                    "namespace": namespaces.get(
+                        entry["path"], entry["namespace"]
+                    ),
+                    "path": entry["path"],
+                })
+            if self.config.config_path and updated_entries:
+                self._update(
+                    phase="Updating configuration",
+                    message="Writing the new library namespaces to config.json",
+                )
+                save_libraries_to_config(
+                    self.config.config_path, updated_entries
+                )
+                self.config.libraries = updated_entries
             self._update(
                 phase="Updating artwork cache",
                 message="Moving cached artwork to the new album IDs",
@@ -534,9 +615,13 @@ def create_app(config):
     )
     app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
     catalog = LibraryCatalog(config.database, read_only=config.read_only)
+    if not config.read_only and config.libraries:
+        catalog.db.sync_libraries(config.libraries)
+        catalog.reload()
     scans = ScanManager(config, catalog)
     rekeys = RekeyManager(config, catalog)
     admin_auth = AdminAuth(config.admin_password_sha1)
+    presence = PresenceTracker()
     transcode_cache = TranscodeCache(
         config.transcode_cache_mb * 1024 * 1024
     )
@@ -545,6 +630,7 @@ def create_app(config):
     app.extensions["tracks_scans"] = scans
     app.extensions["tracks_rekeys"] = rekeys
     app.extensions["tracks_admin_auth"] = admin_auth
+    app.extensions["tracks_presence"] = presence
     app.extensions["tracks_transcode_cache"] = transcode_cache
 
     def _admin_token():
@@ -815,6 +901,7 @@ def create_app(config):
                     "name": item["name"],
                     "path": item["path"],
                     "identifier": item["identifier"],
+                    "namespace": item["namespace"],
                 }
                 for item in configured
             ],
@@ -916,6 +1003,30 @@ def create_app(config):
     def api_reload():
         catalog.reload()
         return _json_response({"reloaded": True})
+
+    @app.post("/api/status")
+    def api_status():
+        body = request.get_json(silent=True) or {}
+        online = presence.touch(body.get("client"))
+        scan = scans.snapshot()
+        rekey = rekeys.snapshot()
+        if rekey.get("running"):
+            state = "rekeying"
+            job = rekey
+        elif scan.get("running"):
+            state = "scanning"
+            job = scan
+        else:
+            state = "ready"
+            job = None
+        return _json_response({
+            "online": online,
+            "state": state,
+            "phase": (job or {}).get("phase") or "",
+            "completed": int((job or {}).get("completed") or 0),
+            "total": (job or {}).get("total"),
+            "message": (job or {}).get("message") or "",
+        })
 
     @app.get("/api/health")
     def api_health():
@@ -1056,6 +1167,7 @@ def main(argv=None):
             else args.jpeg_quality
         ),
         music_dirs=settings["music_dirs"],
+        libraries=settings["libraries"],
         config_path=config_path,
         transcode_cache_mb=(
             settings["transcode_cache_mb"]
@@ -1078,8 +1190,8 @@ def main(argv=None):
         print("  config:   %s" % config.config_path)
         print("  database: %s" % config.database)
         print("  artwork:  %s" % config.artwork)
-        print("Created an empty library. Add music folders to "
-              "music_dirs in config.json, then run:")
+        print("Created an empty library. Add libraries to "
+              "config.json, then run:")
         print("  python3 server.py scan")
         return 0
 
@@ -1095,21 +1207,17 @@ def main(argv=None):
                 "identifier": args.identifier,
             })
         else:
-            libraries = [lib for lib in db.load_libraries() if lib["enabled"]]
-            if libraries:
-                roots = [
-                    {"root": lib["path"], "identifier": lib["identifier"]}
-                    for lib in libraries
-                ]
-            elif config.music_dirs:
-                roots = [
-                    {"root": path, "identifier": None}
-                    for path in config.music_dirs
-                ]
-            else:
+            if not config.libraries:
                 parser.error(
-                    "no music folders configured; add them to music_dirs in "
-                    "%s or pass --root PATH" % config.config_path
+                    "no libraries configured; add them to libraries in %s"
+                    % config.config_path
+                )
+            db.sync_libraries(config.libraries)
+            roots = _configured_scan_roots(config, db)
+            if not roots:
+                parser.error(
+                    "no libraries configured; add them to libraries in %s"
+                    % config.config_path
                 )
         summaries = []
         try:
@@ -1165,8 +1273,13 @@ def main(argv=None):
     print("  config:   %s" % config.config_path)
     print("  database: %s" % config.database)
     print("  artwork:  %s" % config.artwork)
-    if config.music_dirs:
-        print("  music:    %s" % ", ".join(config.music_dirs))
+    if config.libraries:
+        for library in config.libraries:
+            print("  library:  %s [%s] %s" % (
+                library.get("identifier") or "?",
+                library.get("namespace") or "?",
+                library.get("path"),
+            ))
     print("  mode:     %s" % (
         "read-only" if config.read_only else "read/write"
     ))

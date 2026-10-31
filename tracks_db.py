@@ -290,6 +290,107 @@ class LibraryDB:
         finally:
             conn.close()
 
+    def sync_libraries(self, libraries):
+        """Apply configured library identifiers/namespaces to the database.
+
+        A configured namespace is a snapshot used for song UUID generation.
+        Changing the identifier alone does not change an existing namespace;
+        that happens on ReKey.  Missing identifiers/namespaces are filled from
+        the existing row, or generated for a new library.
+        """
+
+        if self.read_only:
+            raise ReadOnlyError("The database is open in read-only mode")
+        self.ensure_schema()
+        conn = connect(self.path, read_only=False)
+        try:
+            with conn:
+                for entry in libraries or []:
+                    root = canonical_path(entry["path"])
+                    existing = conn.execute(
+                        "SELECT id, name, identifier, id_namespace"
+                        " FROM libraries WHERE path = ?",
+                        (root,),
+                    ).fetchone()
+                    identifier = entry.get("identifier")
+                    if identifier is None and existing is not None:
+                        identifier = existing["identifier"]
+                    if identifier is None or not str(identifier).strip():
+                        identifier = self._next_identifier(conn)
+                    identifier = str(identifier).strip()
+                    if any(
+                        unicodedata.category(char) == "Cc"
+                        for char in identifier
+                    ):
+                        raise ValueError(
+                            "Library identifier contains control characters"
+                        )
+                    if not normalize_identifier(identifier):
+                        raise ValueError(
+                            "Library identifier must not be empty"
+                        )
+
+                    namespace = entry.get("namespace")
+                    if namespace is None and existing is not None:
+                        namespace = existing["id_namespace"]
+                    if namespace is None or not str(namespace).strip():
+                        namespace = normalize_identifier(identifier)
+                    namespace = normalize_identifier(namespace)
+                    if not namespace:
+                        raise ValueError(
+                            "Library namespace must not be empty: %s" % root
+                        )
+
+                    if existing is not None:
+                        conn.execute(
+                            "UPDATE libraries SET identifier = ?,"
+                            " id_namespace = ?, name = ? WHERE path = ?",
+                            (
+                                identifier,
+                                namespace,
+                                existing["name"] or os.path.basename(root),
+                                root,
+                            ),
+                        )
+                    else:
+                        conn.execute(
+                            "INSERT INTO libraries"
+                            "(id, path, kind, name, identifier, id_namespace,"
+                            " date_added) VALUES(?, ?, 'external', ?, ?, ?, ?)",
+                            (
+                                stable_uuid("library|" + root),
+                                root,
+                                os.path.basename(root) or "Music Library",
+                                identifier,
+                                namespace,
+                                _now(),
+                            ),
+                        )
+
+                rows = conn.execute(
+                    "SELECT path, identifier, id_namespace FROM libraries"
+                ).fetchall()
+                seen = {}
+                for row in rows:
+                    for raw_value in (
+                        row["identifier"], row["id_namespace"]
+                    ):
+                        key = normalize_identifier(raw_value)
+                        owner = seen.get(key)
+                        if owner is not None and owner != row["path"]:
+                            raise ValueError(
+                                "Library identifier/namespace is already in use: %s"
+                                % raw_value
+                            )
+                        seen[key] = row["path"]
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "Library identifier or namespace is already in use"
+            ) from exc
+        finally:
+            conn.close()
+        return self.load_libraries()
+
     @staticmethod
     def _library_row(row):
         return {
@@ -704,7 +805,7 @@ class LibraryDB:
             conn.close()
 
 
-    def rekey_libraries(self):
+    def rekey_libraries(self, identifiers_by_path=None):
         """Recalculate stable IDs for every library in the database.
 
         Artists are derived from names, albums from the album artist and
@@ -723,9 +824,18 @@ class LibraryDB:
                     " FROM libraries ORDER BY path"
                 ).fetchall()
             ]
+            identifiers_by_path = {
+                canonical_path(path): identifier
+                for path, identifier in (identifiers_by_path or {}).items()
+                if identifier is not None
+            }
             namespaces = {}
+            namespace_by_path = {}
             for library in libraries:
-                namespace = normalize_identifier(library["identifier"])
+                source = identifiers_by_path.get(
+                    canonical_path(library["path"]), library["identifier"]
+                )
+                namespace = normalize_identifier(source)
                 if not namespace:
                     raise ValueError(
                         "Library identifier must not be empty: %s"
@@ -737,11 +847,14 @@ class LibraryDB:
                         % namespace
                     )
                 namespaces[library["id"]] = namespace
+                namespace_by_path[
+                    canonical_path(library["path"])
+                ] = namespace
             if not libraries:
                 return {
                     "songIDMap": {}, "albumIDMap": {},
                     "songCount": 0, "albumCount": 0, "artistCount": 0,
-                    "backup": None,
+                    "namespaceByPath": {}, "backup": None,
                 }
 
             backup_path = "%s.rekey-backup-%d.sqlite" % (
@@ -966,6 +1079,7 @@ class LibraryDB:
             "songCount": len(rekeyed_songs),
             "albumCount": len(new_albums),
             "artistCount": len(new_artists),
+            "namespaceByPath": namespace_by_path,
             "backup": os.path.basename(backup_path),
         }
 

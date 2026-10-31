@@ -41,6 +41,8 @@ queue overlay, and a 24pt status bar.
 - Hash-based deep links for albums, songs, playlists, and artists; the copy
   link actions build the full URL from the current scheme, host, and app base
   path.
+- Status bar: Setup gear, Ready/Scanning/ReKeying progress, online client count
+  (globe icon), **Server Cache** usage, and playback state.
 - Database and artwork cache generation from both the command line and the
   in-page **Setup** panel. Setup requires the admin password and offers Quick
   Scan, Full Scan, and ReKey, and can only operate on the libraries listed in
@@ -88,13 +90,19 @@ Open <http://127.0.0.1:8780> (on your LAN use `http://<host-ip>:8780`).
 
 ### Configuration file
 
-`config.json` sets the data directory, the default music folders, and server
+`config.json` sets the data directory, configured libraries, and server
 options:
 
 ```json
 {
   "database_dir": "data",
-  "music_dirs": [],
+  "libraries": [
+    {
+      "identifier": "library1",
+      "namespace": "library1",
+      "path": "/Users/me/Music"
+    }
+  ],
   "host": "0.0.0.0",
   "port": 8780,
   "read_only": false,
@@ -109,14 +117,26 @@ options:
 | Key | Description |
 | --- | --- |
 | `database_dir` | Directory for the database and artwork cache. Relative paths are resolved against the directory containing `config.json`. The database is always `library.sqlite`, and artwork goes in the `Artwork/` subdirectory. |
-| `music_dirs` | Configured music library directories. Command-line scans and the in-page Setup only use these. Multiple entries are allowed, but the web UI cannot add or change paths. |
+| `libraries` | Configured libraries. Each entry has `identifier`, `namespace`, and `path`. Command-line scans and the in-page Setup only use these entries; the web UI cannot add or change paths. Legacy `music_dirs` arrays are still accepted. |
 | `host` / `port` | Listen address, currently `0.0.0.0:8780` for LAN access. |
-| `read_only` | When `true`, stars, play counts, and playlists are not written. |
+| `read_only` | When `true`, all database writes are blocked: stars, play counts, playlist changes, scans, and ReKey. Playback, streaming, and browsing still work. |
 | `jpeg_quality` | Artwork JPEG quality, 15–100, default 80. |
 | `transcode_cache_mb` | Transcode cache limit in MiB, shared across all qualities, default 512. `0` transcodes without retaining output. |
 | `album_sort` | Default Albums sort: `recentlyAdded`, `album`, `artist`, or `year`; defaults to `recentlyAdded`. |
 | `album_sort_descending` | Whether the default sort is descending; defaults to `true` (recently added first). |
 | `admin_password_sha1` | SHA-1 of the Setup admin password (40 hex characters). The development default is the single digit `1`, which hashes to `356a192b7913b04c54574d18c28d46e6395428ab`. |
+
+Library fields:
+
+- `identifier`: unique source string used by the next ReKey. It can be changed
+  without changing existing song UUIDs.
+- `namespace`: the frozen namespace snapshot used to derive song UUIDs. ReKey
+  recalculates it from `identifier` and writes the new value back to
+  `config.json`.
+- `path`: the music folder.
+
+`identifier` also accepts the alias `id` when reading. Newly written configs
+use `identifier`, `namespace`, and `path`.
 
 The transcode cache is an in-process LRU keyed by song ID, quality, source file
 path, mtime, and size. Each quality keeps its own entries while sharing one
@@ -186,7 +206,13 @@ It is best to list the music folders in `config.json` first:
 ```json
 {
   "database_dir": "data",
-  "music_dirs": ["/Users/me/Music"]
+  "libraries": [
+    {
+      "identifier": "library1",
+      "namespace": "library1",
+      "path": "/Users/me/Music"
+    }
+  ]
 }
 ```
 
@@ -209,8 +235,8 @@ Options:
 
 | Option | Description |
 | --- | --- |
-| `--root PATH` | Music directory. When omitted, enabled libraries in the database are used first, then `music_dirs` from `config.json`. |
-| `--identifier NAME` | Identifier for a new library, used to generate song UUIDs. Defaults to `library1`, `library2`, and so on. |
+| `--root PATH` | Ad-hoc music directory for a command-line scan. When omitted, the libraries in `config.json` are used. |
+| `--identifier NAME` | Identifier used with an ad-hoc `--root` scan. Defaults to `library1`, `library2`, and so on. |
 | `--mode quick/full` | `quick` only discovers new files; `full` re-reads files whose mtime or size changed. Defaults to `quick`. |
 | `--force` | Ignores the mtime/size cache, re-reads every file, and rewrites the artwork cache. |
 | `--prune` | Deletes song rows that belong to the library but no longer exist on disk. |
@@ -241,10 +267,12 @@ Once signed in you can:
 - **Quick Scan**: scan the configured directories for new files;
 - **Full Scan**: re-read every file and rebuild metadata and the artwork cache;
 - **ReKey Database**: recompute all song, album, and artist IDs while preserving
-  stars, play counts, playlists, and dates. A SQLite backup is written
-  automatically first, and the page must be reloaded afterwards.
+  stars, play counts, playlists, and dates. The current namespace is recalculated
+  from each library identifier and written back to `config.json`. A SQLite
+  backup is written automatically first, and the page must be reloaded
+  afterwards.
 
-The backend only scans `music_dirs` from `config.json`; the web UI cannot enter
+The backend only scans the libraries in `config.json`; the web UI cannot enter
 scan paths or add libraries. Scans run in a background thread, the Setup window
 shows progress, and the library refreshes automatically when a scan finishes.
 
@@ -288,7 +316,7 @@ The algorithm is identical to `SongIdentity` / `LibraryScanner.stableUUID`:
 
 ```text
 stableUUID(string) = UUID( MD5(UTF-8(string)) )      # no UUID version-bit handling
-song      = "song|"   + normalized(identifier) + "|" + NFC(relativePath)
+song      = "song|"   + normalized(namespace) + "|" + NFC(relativePath)
 artist    = "artist|" + lowercase(NFC(name))
 album     = "album|"  + artistID + "|" + lowercase(NFC(title))
 library   = "library|" + canonicalPath
@@ -296,7 +324,9 @@ library   = "library|" + canonicalPath
 
 Where:
 
-- `normalized(identifier)` is trimmed, NFC-normalized, Unicode lowercased.
+- `normalized(namespace)` is trimmed, NFC-normalized, Unicode lowercased.
+- The namespace is a snapshot. Changing the library `identifier` does not change
+  existing song UUIDs until ReKey runs.
 - Relative paths are based on the library root, use NFC, and drop the leading
   `/`.
 - Python's `str.lower()` applies context-sensitive final Greek sigma folding,
@@ -371,6 +401,8 @@ What is implemented:
   top left has four icon-only section tabs (Albums / Artists / Songs /
   Playlists) and opens on Albums. There is no volume control because playback
   volume is fixed at 100%; the waveform button selects quality (AAC · 128 kbps);
+- the status bar shows the Setup gear followed by Ready / Scanning / ReKeying
+  progress, the online-client count with a globe icon, and Server Cache usage;
 - live AAC transcoding and a shared in-memory LRU cache, with total usage and
   entry count in the status bar;
 - album cards, album paging, album detail, the virtualized Songs table, and a
@@ -443,7 +475,7 @@ the canonical hash route.
 
 ```text
 webtracks/
-  config.json             data directory, default music folders, server options
+  config.json             database, library identifiers/namespaces, server options
   server.py               Flask app, API, scan jobs, CLI entry point
   tracks_transcode.py     ffmpeg transcoding and the shared in-memory LRU cache
   tracks_config.py        reads config.json and environment variables

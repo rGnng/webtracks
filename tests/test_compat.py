@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import sqlite3
@@ -15,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from server import Config, create_app, main  # noqa: E402
-from tracks_config import load_settings  # noqa: E402
+from tracks_config import load_settings, save_libraries_to_config  # noqa: E402
 from tracks_db import LibraryDB, LibraryCatalog  # noqa: E402
 from tracks_identity import (  # noqa: E402
     album_uuid,
@@ -233,6 +234,38 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(changed["id"], expected)
         self.assertNotEqual(changed["id"], song["id"])
         self.assertIn(song["id"], second["songIDMap"])
+
+
+    def test_sync_libraries_uses_namespace_snapshot(self):
+        libraries = self.db.sync_libraries([{
+            "path": self.music,
+            "identifier": "renamedlib",
+            "namespace": "testlib",
+        }])
+        library = next(
+            item for item in libraries
+            if os.path.realpath(item["path"]) == os.path.realpath(self.music)
+        )
+        self.assertEqual(library["identifier"], "renamedlib")
+        self.assertEqual(library["id_namespace"], "testlib")
+
+        result = self.db.rekey_libraries({
+            os.path.realpath(self.music): "renamedlib",
+        })
+        expected = song_uuid(
+            "renamedlib", normalize_relative_path("Artist/Album/01 Song.flac")
+        )
+        conn = sqlite3.connect(self.db.path)
+        conn.row_factory = sqlite3.Row
+        song = dict(conn.execute("SELECT * FROM songs").fetchone())
+        library = dict(conn.execute("SELECT * FROM libraries").fetchone())
+        conn.close()
+        self.assertEqual(song["id"], expected)
+        self.assertEqual(library["id_namespace"], "renamedlib")
+        self.assertEqual(
+            result["namespaceByPath"][os.path.realpath(self.music)],
+            "renamedlib",
+        )
 
 
 class ArtworkTests(unittest.TestCase):
@@ -493,6 +526,77 @@ class ApiTests(unittest.TestCase):
         songs = self.client.get("/api/songs").get_json()["songs"]
         self.assertEqual(len(songs), 1)
 
+    def test_rekey_writes_namespace_back_to_config(self):
+        config_path = os.path.join(self.root, "config.json")
+        with open(config_path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "database_dir": "data",
+                "libraries": [{
+                    "identifier": "newidentifier",
+                    "namespace": "api",
+                    "path": self.music,
+                }],
+            }))
+        app = create_app(
+            Config(
+                self.db_path,
+                self.artwork,
+                read_only=False,
+                config_path=config_path,
+                libraries=[{
+                    "identifier": "newidentifier",
+                    "namespace": "api",
+                    "path": self.music,
+                }],
+            )
+        )
+        client = app.test_client()
+        token = client.post(
+            "/api/setup/login", json={"password": "1"}
+        ).get_json()["token"]
+        started = client.post(
+            "/api/setup/rekey",
+            headers={"Authorization": "Bearer " + token},
+        )
+        self.assertEqual(started.status_code, 202)
+        job = started.get_json()["job"]
+        for _ in range(80):
+            if not job.get("running"):
+                break
+            time.sleep(0.05)
+            job = client.get("/api/setup/rekey").get_json()
+        self.assertFalse(job["running"])
+        self.assertEqual(job["phase"], "Done")
+        with open(config_path, "r", encoding="utf-8") as handle:
+            values = json.load(handle)
+        self.assertEqual(
+            values["libraries"][0]["namespace"], "newidentifier"
+        )
+        self.assertEqual(
+            values["libraries"][0]["identifier"], "newidentifier"
+        )
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        library = dict(conn.execute("SELECT * FROM libraries").fetchone())
+        conn.close()
+        self.assertEqual(library["identifier"], "newidentifier")
+        self.assertEqual(library["id_namespace"], "newidentifier")
+
+    def test_status_presence_and_ready_state(self):
+        first = self.client.post(
+            "/api/status", json={"client": "client-a"}
+        ).get_json()
+        self.assertEqual(first["online"], 1)
+        self.assertEqual(first["state"], "ready")
+        second = self.client.post(
+            "/api/status", json={"client": "client-b"}
+        ).get_json()
+        self.assertEqual(second["online"], 2)
+        repeat = self.client.post(
+            "/api/status", json={"client": "client-a"}
+        ).get_json()
+        self.assertEqual(repeat["online"], 2)
+
     def test_setup_admin_auth_and_scan_guards(self):
         setup = self.client.get("/api/setup")
         self.assertEqual(setup.status_code, 200)
@@ -558,8 +662,8 @@ class ConfigTests(unittest.TestCase):
             )
             self.assertEqual(
                 settings["music_dirs"],
-                [os.path.join(root, "music"),
-                 os.path.expanduser("~/Music")],
+                [os.path.realpath(os.path.join(root, "music")),
+                 os.path.realpath(os.path.expanduser("~/Music"))],
             )
 
     def test_transcode_cache_size_from_config_and_env(self):
@@ -628,6 +732,42 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(
                     load_settings(path)["admin_password_sha1"], "b" * 40
                 )
+
+    def test_library_config_and_namespace_write_back(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            music = os.path.join(root, "Music")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "database_dir": "var",
+                    "libraries": [{
+                        "identifier": "main",
+                        "namespace": "main",
+                        "path": music,
+                    }],
+                }, handle)
+            with self._clean_env():
+                settings = load_settings(path)
+            self.assertEqual(settings["libraries"][0]["identifier"], "main")
+            self.assertEqual(settings["libraries"][0]["namespace"], "main")
+            self.assertEqual(settings["music_dirs"], [os.path.realpath(music)])
+            save_libraries_to_config(path, [{
+                "identifier": "main",
+                "namespace": "nextnamespace",
+                "path": music,
+            }])
+            with self._clean_env():
+                updated = load_settings(path)
+            self.assertEqual(
+                updated["libraries"][0]["namespace"], "nextnamespace"
+            )
+            with open(path, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+            self.assertNotIn("music_dirs", raw)
+            self.assertEqual(
+                set(raw["libraries"][0]),
+                {"identifier", "namespace", "path"},
+            )
 
     def test_init_creates_local_database_and_artwork_dir(self):
         with tempfile.TemporaryDirectory() as root:
