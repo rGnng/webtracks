@@ -2646,7 +2646,6 @@
         if (!command) state.selectedSongs.clear();
         for (let i = from; i <= to; i += 1) state.selectedSongs.add(list[i].id);
         state.songAnchor = songId;
-        if (state.songVirtual) state.songVirtual.rerender();
         refreshSelectionClasses();
         updateStatus();
         focusContent();
@@ -2657,7 +2656,6 @@
       if (state.selectedSongs.has(songId)) state.selectedSongs.delete(songId);
       else state.selectedSongs.add(songId);
       state.songAnchor = state.selectedSongs.size ? songId : null;
-      if (state.songVirtual) state.songVirtual.rerender();
       refreshSelectionClasses();
       updateStatus();
       focusContent();
@@ -2666,17 +2664,28 @@
     state.selectedSongs.clear();
     state.selectedSongs.add(songId);
     state.songAnchor = songId;
-    if (state.songVirtual) state.songVirtual.rerender();
     refreshSelectionClasses();
     updateStatus();
     focusContent();
   }
 
   function refreshSelectionClasses() {
-    document.querySelectorAll(".track-row, .browser-song-row").forEach((row) => {
-      const selected = row.dataset.songId && state.selectedSongs.has(row.dataset.songId);
-      row.classList.toggle("selected", Boolean(selected));
-      if (selected) {
+    const list = state.songRows || [];
+    document.querySelectorAll(".song-row, .track-row, .browser-song-row").forEach((row) => {
+      const songId = row.dataset.songId;
+      const selected = Boolean(songId && state.selectedSongs.has(songId));
+      row.classList.toggle("selected", selected);
+      if (row.classList.contains("song-row")) {
+        row.setAttribute("aria-selected", selected ? "true" : "false");
+        const index = selected ? list.findIndex((song) => song.id === songId) : -1;
+        row.classList.toggle("joined-top", Boolean(
+          index > 0 && state.selectedSongs.has(list[index - 1].id)
+        ));
+        row.classList.toggle("joined-bottom", Boolean(
+          index >= 0 && index + 1 < list.length
+          && state.selectedSongs.has(list[index + 1].id)
+        ));
+      } else if (selected) {
         const previous = row.previousElementSibling;
         const next = row.nextElementSibling;
         row.classList.toggle("joined-top", Boolean(
@@ -3381,13 +3390,23 @@
 
   function finishQueue() {
     player.playing = false;
+    player.pendingPlay = false;
     player.pendingRecord = false;
+    player.pendingSeek = 0;
+    player.playId = null;
+    player.queue = [];
+    player.baseQueue = [];
+    player.index = -1;
+    player.elapsed = 0;
+    player.loadedSongId = null;
     audio.pause();
-    player.elapsed = currentDuration();
+    audio.removeAttribute("src");
+    audio.load();
     renderPlayerUI();
     refreshCurrentIndicators();
     updateStatus();
-    savePlayerState();
+    if (state.queueOpen) renderQueuePopover();
+    savePlayer();
   }
 
   function toggleShuffle() {
