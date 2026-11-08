@@ -479,7 +479,7 @@ button:disabled {
   border-radius: 1px;
   background: currentColor;
   transform-origin: 50% calc(var(--spinner-size) * 0.5);
-  transform: rotate(calc(var(--i) * 30deg));
+  transform: rotate(calc(var(--i) * -30deg));
   animation: apple-spinner-fade 1s linear infinite;
   animation-delay: calc(var(--i) * -83ms);
 }
